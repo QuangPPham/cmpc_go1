@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: quadruped_mpc_control
+Version: 0.0.1
+Summary: Convex MPC controller with python bindings for MPC using the osqp solver
+Home-page: 
+Author: Quang Pham
+Author-email: phamphuquang2004@gmail.com
+License: mixed
+Keywords: robotics,control,physics simulation
+Platform: any
+Requires-Dist: numpy
+Dynamic: author
+Dynamic: author-email
+Dynamic: description
+Dynamic: keywords
+Dynamic: license
+Dynamic: platform
+Dynamic: requires-dist
+Dynamic: summary
+
+Convex MPC controller with python bindings for MPC using the OSQP solver in MuJoCo
