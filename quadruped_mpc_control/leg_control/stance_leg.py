@@ -12,9 +12,14 @@ except:
 
 DTYPE = np.float32
 
+qp_solver_map = {
+    "QPOASES": mpc.QPOASES,
+    "OSQP": mpc.OSQP,
+}
+
 class StanceLegControlMPC():
     def __init__(self, robot: Go1, horizonLength: int = 10, dtMpc: float = 0.03, gait = trotting,
-                 state_estimator: StateEstimator = None, qp_solver = mpc.QPOASES):
+                 state_estimator: StateEstimator = None, qp_solver = "QPOASES"):
         self._robot = robot
         self._stateEstimator = state_estimator
         self.desired_speed = np.zeros(2, dtype=DTYPE)
@@ -31,7 +36,7 @@ class StanceLegControlMPC():
             dtMpc,                      # planning rate
             list(robot._mpc_weights),   # mpc_weights for cost
             1e-5,                       # alpha, see paper for details
-            qp_solver                   # solver
+            qp_solver_map[qp_solver]    # solver
         )
     
     def updateCommand(self, command):
@@ -48,7 +53,8 @@ class StanceLegControlMPC():
         # com_pos doesn't matter
         desired_com_position = np.array([0., 0., self._desired_body_height],dtype=DTYPE)
         # want base at constant height
-        desired_com_velocity = np.array([self.desired_speed[0], self.desired_speed[1], 0.], dtype=DTYPE)
+        desired_com_velocity_body = np.array([self.desired_speed[0], self.desired_speed[1], 0.], dtype=DTYPE)
+        desired_com_velocity = self._robot.getBaseRotMat() @ desired_com_velocity_body
         # want base to be parallel to ground. Also yaw in body-aligned frame is zero
         desired_com_roll_pitch_yaw = np.array([0., 0., 0.], dtype=DTYPE)
         # only want to change twisting speed
@@ -67,9 +73,9 @@ class StanceLegControlMPC():
         # Run MPC
         predicted_contact_forces = self._mpc.compute_contact_forces(
             np.asarray(self._stateEstimator.com_pos, dtype=DTYPE),          # com_position
-            np.asarray(self._stateEstimator.com_linvel_body, dtype=DTYPE),  # com_velocity
+            np.asarray(self._stateEstimator.com_linvel_world, dtype=DTYPE), # com_velocity
             np.asarray(self._stateEstimator.com_rpy, dtype=DTYPE),          # com_roll_pitch_yaw
-            np.asarray(self._stateEstimator.com_angvel_body, dtype=DTYPE),  # com_angular_velocity
+            np.asarray(self._stateEstimator.com_angvel_world, dtype=DTYPE), # com_angular_velocity
             np.asarray(self._gait.getMPCtable(), dtype=DTYPE),              # foot_contact_states
             np.asarray(self._robot.getLocalFeetPosition().flatten(), dtype=DTYPE),  #foot_positions_base_frame
             self._friction_coeffs,                                          # foot_friction_coeffs

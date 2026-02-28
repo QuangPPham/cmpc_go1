@@ -60,6 +60,12 @@ class StateEstimator():
     """The base angular velocity projected in the body-aligned world inertial frame.
     """
     return self._com_angular_velocity_body_frame
+  
+  @property
+  def com_angvel_world(self):
+    """The base angular velocity projected in the world inertial frame.
+    """
+    return self._com_angular_velocity_world_frame
 
   def reset(self, current_time):
     """Reset data
@@ -96,4 +102,7 @@ class StateEstimator():
 
     # Get CoM linear and angular velocity in body frame
     self._com_velocity_body_frame = base_rot_mat.T @ self._com_velocity_world_frame
-    self._com_angular_velocity_world_frame = self._robot.getTrueBaseAngularVelocity()
+    self._com_angular_velocity_body_frame = self._robot.getTrueBaseAngularVelocity()
+
+    # Get CoM angular velocity in global frame
+    self._com_angular_velocity_world_frame = base_rot_mat @ self._com_angular_velocity_body_frame
