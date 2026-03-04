@@ -100,6 +100,7 @@ else:
 
 sources = [
     "quadruped_mpc_control/convex_mpc/mpc_osqp.cc",
+    "quadruped_mpc_control/convex_mpc/rf_mpc_osqp.cc",
 	"third_party/osqp/src/auxil.c",
 	"third_party/osqp/src/cs.c",
 	"third_party/osqp/src/ctrlc.c",
@@ -177,7 +178,14 @@ mpc_osqp_ext = Extension("mpc_osqp",
                          extra_compile_args=CXX_FLAGS.split(),
                          include_dirs=include_dirs + ["."])
 
+rf_mpc_osqp_ext = Extension("rf_mpc_osqp",
+                         sources=sources,
+                         libraries=libraries,
+                         extra_compile_args=CXX_FLAGS.split(),
+                         include_dirs=include_dirs + ["."])
+
 extensions.append(mpc_osqp_ext)
+extensions.append(rf_mpc_osqp_ext)
 
 print(find_packages('.'))
 
@@ -185,9 +193,9 @@ setup(
     name='quadruped_mpc_control',
     version='0.0.1',
     description=
-    'Convex MPC controller with python bindings for MPC using the osqp solver',
+    'Convex MPC and RF-MPC controller with python bindings for MPC using the osqp solver',
     long_description=
-    'Convex MPC controller with python bindings for MPC using the OSQP solver in MuJoCo',
+    'Convex MPC and Representation-free MPC controller with python bindings for MPC using the OSQP solver in MuJoCo',
     url='',
     author='Quang Pham',
     author_email='phamphuquang2004@gmail.com',

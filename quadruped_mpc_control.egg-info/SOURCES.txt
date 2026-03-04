@@ -6,13 +6,12 @@ quadruped_mpc_control.egg-info/dependency_links.txt
 quadruped_mpc_control.egg-info/requires.txt
 quadruped_mpc_control.egg-info/top_level.txt
 quadruped_mpc_control/convex_mpc/__init__.py
-quadruped_mpc_control/convex_mpc/gait.py
-quadruped_mpc_control/convex_mpc/mpc_control.py
 quadruped_mpc_control/convex_mpc/mpc_osqp.cc
+quadruped_mpc_control/convex_mpc/rf_mpc_osqp.cc
 quadruped_mpc_control/leg_control/__init__.py
-quadruped_mpc_control/leg_control/foot_trajectory.py
-quadruped_mpc_control/leg_control/interpolation.py
-quadruped_mpc_control/leg_control/leg_controller.py
+quadruped_mpc_control/leg_control/gait.py
+quadruped_mpc_control/leg_control/stance_leg.py
+quadruped_mpc_control/leg_control/swing_leg.py
 quadruped_mpc_control/robot_model/__init__.py
 quadruped_mpc_control/robot_model/go1.py
 quadruped_mpc_control/state_estimator/__init__.py

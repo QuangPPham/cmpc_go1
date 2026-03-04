@@ -51,7 +51,7 @@ typedef Eigen::Matrix<qpOASES::real_t, Eigen::Dynamic, Eigen::Dynamic,
     RowMajorMatrixXd;
     
 constexpr int k3Dim = 3;
-constexpr double kGravity = 9.8;
+constexpr double kGravity = 9.81;
 constexpr double kMaxScale = 10;
 constexpr double kMinScale = 0.1;
 
@@ -59,7 +59,6 @@ constexpr double kMinScale = 0.1;
 #include "Eigen/SparseCore"
 #include "osqp/include/ctrlc.h"
 #include "osqp/include/osqp.h"
-
 
 
 enum QPSolverName
@@ -70,13 +69,13 @@ enum QPSolverName
 
 // Auxiliary function for copying data to qpOASES data structure.
 void CopyToVec(const Eigen::VectorXd& vec,
-               const std::vector<int> foot_contact_states, int num_legs,
+               const std::vector<double> foot_contact_states, int num_legs,
                int planning_horizon, int blk_size,
                std::vector<qpOASES::real_t>* out) {
   int buffer_index = 0;
   for (int i = 0; i < num_legs * planning_horizon; ++i) {
-    int leg_id = (i % num_legs);
-    if (foot_contact_states[leg_id] == 0) {
+    //int leg_id = (i % num_legs);
+    if (foot_contact_states[i] == 0) {
       // skip the block.
       continue;
     }
@@ -92,14 +91,14 @@ void CopyToVec(const Eigen::VectorXd& vec,
 
 // Auxiliary function for copying data to qpOASES data structure.
 void CopyToMatrix(const Eigen::MatrixXd& input,
-                  const std::vector<int> foot_contact_states, int num_legs,
+                  const std::vector<double> foot_contact_states, int num_legs,
                   int planning_horizon, int row_blk_size, int col_blk_size,
                   bool is_block_diagonal, Eigen::Map<RowMajorMatrixXd>* out) {
   // the block index in the destination matrix.
   int row_blk = 0;
   for (int i = 0; i < planning_horizon * num_legs; ++i) {
-    int leg_id = (i % num_legs);
-    if (foot_contact_states[leg_id] == 0) {
+    // int leg_id = (i % num_legs);
+    if (foot_contact_states[i] == 0) {
       // skip the row block.
       continue;
     }
@@ -113,8 +112,8 @@ void CopyToMatrix(const Eigen::MatrixXd& input,
       int col_blk = 0;
       // Non-diagonal, need to copy all elements.
       for (int j = 0; j < planning_horizon * num_legs; ++j) {
-        int leg_id = (j % num_legs);
-        if (foot_contact_states[leg_id] == 0) {
+        // int leg_id = (j % num_legs);
+        if (foot_contact_states[j] == 0) {
           // skip the col block.
           continue;
         }
@@ -184,8 +183,8 @@ void CalculateConstraintBounds(const Eigen::MatrixXd& contact_state, double fz_m
     Eigen::VectorXd* constraint_lb_ptr,
     Eigen::VectorXd* constraint_ub_ptr);
 
-double EstimateCoMHeightSimple(const Eigen::MatrixXd& foot_positions_world,
-    const std::vector<bool> foot_contact_states);
+// double EstimateCoMHeightSimple(const Eigen::MatrixXd& foot_positions_world,
+//     const std::vector<double> foot_contact_states);
 
 // The MIT convex mpc implementation as described in this paper:
 //   https://ieeexplore.ieee.org/document/8594448/
@@ -222,7 +221,7 @@ public:
         std::vector<double> com_velocity,
         std::vector<double> com_roll_pitch_yaw,
         std::vector<double> com_angular_velocity,
-        std::vector<int> foot_contact_states,
+        std::vector<double> foot_contact_states,
         std::vector<double> foot_positions_body_frame,
         std::vector<double> foot_friction_coeffs,
         std::vector<double> desired_com_position,
@@ -505,23 +504,23 @@ void CalculateConstraintBounds(const MatrixXd& contact_state, double fz_max,
     }
 }
 
-double EstimateCoMHeightSimple(
-    const MatrixXd& foot_positions_world,
-    const std::vector<int> foot_contact_states) {
-    int legs_in_contact = 0;
-    double com_height = 0;
-    const int z_dim = 2;
-    for (int i = 0; i < foot_contact_states.size(); ++i) {
-        if (foot_contact_states[i]) {
-            com_height += foot_positions_world(i, z_dim);
-            legs_in_contact += 1;
-        }
-    }
+// double EstimateCoMHeightSimple(
+//     const MatrixXd& foot_positions_world,
+//     const std::vector<double> foot_contact_states) {
+//     int legs_in_contact = 0;
+//     double com_height = 0;
+//     const int z_dim = 2;
+//     for (int i = 0; i < foot_contact_states.size(); ++i) {
+//         if (foot_contact_states[i]) {
+//             com_height += foot_positions_world(i, z_dim);
+//             legs_in_contact += 1;
+//         }
+//     }
 
-    // We don't support jumping in air for now.
-    DCHECK_GT(legs_in_contact, 0);
-    return abs(com_height / legs_in_contact);
-}
+//     // We don't support jumping in air for now.
+//     DCHECK_GT(legs_in_contact, 0);
+//     return abs(com_height / legs_in_contact);
+// }
 
 MatrixXd AsBlockDiagonalMat(const std::vector<double>& qp_weights,
     int planning_horizon) {
@@ -609,7 +608,7 @@ std::vector<double> ConvexMpc::ComputeContactForces(
     std::vector<double> com_velocity,
     std::vector<double> com_roll_pitch_yaw,
     std::vector<double> com_angular_velocity,
-    std::vector<int> foot_contact_states,
+    std::vector<double> foot_contact_states,
     std::vector<double> foot_positions_body_frame,
     std::vector<double> foot_friction_coeffs,
     std::vector<double> desired_com_position,
@@ -619,6 +618,8 @@ std::vector<double> ConvexMpc::ComputeContactForces(
 
     std::vector<double> error_result;
     
+    // Get contact states
+    contact_states_ = Eigen::Map<const MatrixXd>(foot_contact_states.data(), num_legs_, planning_horizon_).transpose();
 
     // First we compute the foot positions in the world frame.
     DCHECK_EQ(com_roll_pitch_yaw.size(), k3Dim);
@@ -635,11 +636,8 @@ std::vector<double> ConvexMpc::ComputeContactForces(
 
     // Now we can estimate the body height using the world frame foot positions
     // and contact states. We use simple averges leg height here.
-    DCHECK_EQ(foot_contact_states.size(), num_legs_);
-    const double com_z =
-        com_position.size() == k3Dim
-        ? com_position[2]
-        : EstimateCoMHeightSimple(foot_positions_world_, foot_contact_states);
+    // DCHECK_EQ(foot_contact_states.size(), num_legs_);
+    const double com_z = com_position[2];
 
     // In MPC planning we don't care about absolute position in the horizontal
     // plane.
@@ -702,22 +700,21 @@ std::vector<double> ConvexMpc::ComputeContactForces(
 
     q_vec_ = 2 * b_qp_.transpose() * (qp_weights_ * state_diff);
 
-    const VectorXd one_vec = VectorXd::Constant(planning_horizon_, 1.0);
-    const VectorXd zero_vec = VectorXd::Zero(planning_horizon_);
-    for (int j = 0; j < foot_contact_states.size(); ++j) {
-        if (foot_contact_states[j]) {
-            contact_states_.col(j) = one_vec;
-        }
-        else {
-            contact_states_.col(j) = zero_vec;
-        }
-    }
+    // const VectorXd one_vec = VectorXd::Constant(planning_horizon_, 1.0);
+    // const VectorXd zero_vec = VectorXd::Zero(planning_horizon_);
+    // for (int j = 0; j < foot_contact_states.size(); ++j) {
+    //     if (foot_contact_states[j]) {
+    //         contact_states_.col(j) = one_vec;
+    //     }
+    //     else {
+    //         contact_states_.col(j) = zero_vec;
+    //     }
+    // }
 
     CalculateConstraintBounds(contact_states_, mass_ * kGravity * kMaxScale,
         mass_ * kGravity * kMinScale,
         foot_friction_coeffs[0], planning_horizon_,
         &constraint_lb_, &constraint_ub_);
-    
     
     
     if (qp_solver_name_ == OSQP)
@@ -831,84 +828,88 @@ std::vector<double> ConvexMpc::ComputeContactForces(
       }
       
       return qp_solution_;
-    } else
-    {
-      
-      // Solve the QP Problem using qpOASES
-    UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
-                            &constraint_);
+    } else {
+        
+        // Solve the QP Problem using qpOASES
+        UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
+                                &constraint_);
 
-    // To use qpOASES, we need to eleminate the zero rows/cols from the
-    // matrices when copy to qpOASES buffer
-    int num_legs_in_contact = 0;
-    for (int i = 0; i < foot_contact_states.size(); ++i) {
-      if (foot_contact_states[i]) {
-        num_legs_in_contact += 1;
-      }
-    }
+        // To use qpOASES, we need to eleminate the zero rows/cols from the
+        // matrices when copy to qpOASES buffer
+        // int num_legs_in_contact = 0;
+        int num_legs_in_contact_over_horizon = 0;
+        for (int i = 0; i < foot_contact_states.size(); ++i) {
+        if (foot_contact_states[i]) {
+            // num_legs_in_contact += 1;
+            num_legs_in_contact_over_horizon += 1;
+        }
+        }
 
-    const int qp_dim = num_legs_in_contact * k3Dim * planning_horizon_;
-    const int constraint_dim = num_legs_in_contact * 5 * planning_horizon_;
-    std::vector<qpOASES::real_t> hessian(qp_dim * qp_dim, 0);
-    Map<RowMajorMatrixXd> hessian_mat_view(hessian.data(), qp_dim, qp_dim);
-    // Copy to the hessian
-    CopyToMatrix(p_mat_, foot_contact_states, num_legs_, planning_horizon_,
-                 k3Dim, k3Dim, false, &hessian_mat_view);
+        // const int qp_dim = num_legs_in_contact * k3Dim * planning_horizon_;
+        // const int constraint_dim = num_legs_in_contact * 5 * planning_horizon_;
+        const int qp_dim = num_legs_in_contact_over_horizon * k3Dim;
+        const int constraint_dim = num_legs_in_contact_over_horizon * 5;
+        std::vector<qpOASES::real_t> hessian(qp_dim * qp_dim, 0);
+        Map<RowMajorMatrixXd> hessian_mat_view(hessian.data(), qp_dim, qp_dim);
+        // Copy to the hessian
+        CopyToMatrix(p_mat_, foot_contact_states, num_legs_, planning_horizon_,
+                    k3Dim, k3Dim, false, &hessian_mat_view);
 
-    std::vector<qpOASES::real_t> g_vec(qp_dim, 0);
-    // Copy the g_vec
-    CopyToVec(q_vec_, foot_contact_states, num_legs_, planning_horizon_, k3Dim,
-              &g_vec);
+        std::vector<qpOASES::real_t> g_vec(qp_dim, 0);
+        // Copy the g_vec
+        CopyToVec(q_vec_, foot_contact_states, num_legs_, planning_horizon_, k3Dim,
+                &g_vec);
 
-    std::vector<qpOASES::real_t> a_mat(qp_dim * constraint_dim, 0);
-    Map<RowMajorMatrixXd> a_mat_view(a_mat.data(), constraint_dim, qp_dim);
-    CopyToMatrix(constraint_, foot_contact_states, num_legs_, planning_horizon_,
-                 5, k3Dim, true, &a_mat_view);
+        std::vector<qpOASES::real_t> a_mat(qp_dim * constraint_dim, 0);
+        Map<RowMajorMatrixXd> a_mat_view(a_mat.data(), constraint_dim, qp_dim);
+        CopyToMatrix(constraint_, foot_contact_states, num_legs_, planning_horizon_,
+                    5, k3Dim, true, &a_mat_view);
 
-    std::vector<qpOASES::real_t> a_lb(constraint_dim, 0);
-    CopyToVec(constraint_lb_, foot_contact_states, num_legs_, planning_horizon_,
-              5, &a_lb);
+        std::vector<qpOASES::real_t> a_lb(constraint_dim, 0);
+        CopyToVec(constraint_lb_, foot_contact_states, num_legs_, planning_horizon_,
+                5, &a_lb);
 
-    std::vector<qpOASES::real_t> a_ub(constraint_dim, 0);
-    CopyToVec(constraint_ub_, foot_contact_states, num_legs_, planning_horizon_,
-              5, &a_ub);
+        std::vector<qpOASES::real_t> a_ub(constraint_dim, 0);
+        CopyToVec(constraint_ub_, foot_contact_states, num_legs_, planning_horizon_,
+                5, &a_ub);
 
-    auto qp_problem = QProblem(qp_dim, constraint_dim, qpOASES::HST_UNKNOWN,
-                               qpOASES::BT_TRUE);
+        auto qp_problem = QProblem(qp_dim, constraint_dim, qpOASES::HST_UNKNOWN,
+                                qpOASES::BT_TRUE);
 
-    qpOASES::Options options;
-    options.setToMPC();
-    options.printLevel = qpOASES::PL_NONE;
-    qp_problem.setOptions(options);
+        qpOASES::Options options;
+        options.setToMPC();
+        options.printLevel = qpOASES::PL_NONE;
+        qp_problem.setOptions(options);
 
-    int max_solver_iter = 100;
+        int max_solver_iter = 100;
 
-    qp_problem.init(hessian.data(), g_vec.data(), a_mat.data(), nullptr,
-                    nullptr, a_lb.data(), a_ub.data(), max_solver_iter,
-                    nullptr);
+        qp_problem.init(hessian.data(), g_vec.data(), a_mat.data(), nullptr,
+                        nullptr, a_lb.data(), a_ub.data(), max_solver_iter,
+                        nullptr);
 
-    std::vector<qpOASES::real_t> qp_sol(qp_dim, 0);
-    qp_problem.getPrimalSolution(qp_sol.data());
-    for (auto& force : qp_sol) {
-      force = -force;
-    }
-    Map<VectorXd> qp_sol_vec(qp_sol.data(), qp_sol.size());
+        std::vector<qpOASES::real_t> qp_sol(qp_dim, 0);
+        qp_problem.getPrimalSolution(qp_sol.data());
+        for (auto& force : qp_sol) {
+        force = -force;
+        }
+        Map<VectorXd> qp_sol_vec(qp_sol.data(), qp_sol.size());
 
-    int buffer_index = 0;
-    for (int i = 0; i < num_legs_ * planning_horizon_; ++i) {
-      int leg_id = i % num_legs_;
-      if (foot_contact_states[leg_id] == 0) {
-        qp_solution_[i * k3Dim] = 0;
-        qp_solution_[i * k3Dim + 1] = 0;
-        qp_solution_[i * k3Dim + 2] = 0;
-      } else {
-        qp_solution_[i * k3Dim] = qp_sol[buffer_index * k3Dim];
-        qp_solution_[i * k3Dim + 1] = qp_sol[buffer_index * k3Dim + 1];
-        qp_solution_[i * k3Dim + 2] = qp_sol[buffer_index * k3Dim + 2];
-        ++buffer_index;
-      }
-    }
-    return qp_solution_;
+        // Map from QPOASES reduced-variables solution into full solution
+        int buffer_index = 0;
+        for (int i = 0; i < num_legs_ * planning_horizon_; ++i) {
+        // int leg_id = i % num_legs_;
+        if (foot_contact_states[i] == 0) {
+            qp_solution_[i * k3Dim] = 0;
+            qp_solution_[i * k3Dim + 1] = 0;
+            qp_solution_[i * k3Dim + 2] = 0;
+        } else {
+            qp_solution_[i * k3Dim] = qp_sol[buffer_index * k3Dim];
+            qp_solution_[i * k3Dim + 1] = qp_sol[buffer_index * k3Dim + 1];
+            qp_solution_[i * k3Dim + 2] = qp_sol[buffer_index * k3Dim + 2];
+            ++buffer_index;
+        }
+        }
+        return qp_solution_;
     }
 }
 

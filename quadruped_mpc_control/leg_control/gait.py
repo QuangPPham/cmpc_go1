@@ -117,7 +117,7 @@ class Gait(object):
         if iteration is None:
             iteration = self._iteration
         progress = np.array([iteration]*4) - self._offsets
-        state = np.zeros(4)
+        state = np.zeros(4, dtype=np.int32)
         for j in range(4):
             if progress[j] < 0:
                 progress[j] += self._nIterations

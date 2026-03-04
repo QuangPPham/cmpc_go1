@@ -1,2 +1,3 @@
 mpc_osqp
 quadruped_mpc_control
+rf_mpc_osqp

@@ -139,6 +139,38 @@ class Go1:
         local_vel = world_vel @ base_rot_mat
 
         return local_vel
+    
+    def getFeetForce(self, leg):
+        """Compute feet force in world frame
+        """
+        foot_geom_name = self._feetName[leg]
+        foot_geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, foot_geom_name)
+        total_force = np.zeros(3)
+        contact = self.data.contact
+
+        # Iterate over all active contacts
+        for i in range(self.data.ncon):
+            # Check if the foot geom is involved in this contact
+            if foot_geom_id == contact.geom1[i] or foot_geom_id == contact.geom2[i]:
+                # 1. Get force in contact frame (3D)
+                force_local = np.zeros(6)
+                mujoco.mj_contactForce(self.model, self.data, i, force_local)
+
+                # 2. Extract contact frame rotation matrix
+                contact_frame = contact.frame[i].reshape(3, 3)
+                
+                # 3. Rotate local force to global frame
+                # force_global = R * force_local
+                force_global = contact_frame.T @ force_local[:3]
+                
+                # If the foot is geom2, the force direction is flipped
+                if contact.geom2[i] == foot_geom_id:
+                    total_force += force_global
+                else:
+                    total_force -= force_global # Reverse sign if foot is geom1
+                    
+        return total_force
+
 
     def computeLegJacobian(self, leg):
         """Get Jacobian of foot for the given leg in world frame
