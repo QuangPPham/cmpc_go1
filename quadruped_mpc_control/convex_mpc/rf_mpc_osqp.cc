@@ -54,6 +54,92 @@ enum RFQPSolverName
   OSQP, QPOASES
 };
 
+// Auxiliary function for copying data to qpOASES data structure.
+// void RFCopyToVec(const Eigen::VectorXd& vec, const std::vector<double> foot_contact_states,
+//                  int num_legs, int planning_horizon, bool is_diagonal,
+//                  std::vector<qpOASES::real_t>* out) {
+
+//     int buffer_index = 0;
+//     int force_buffer_index = 12*planning_horizon;
+//     for (int i = 0; i < planning_horizon; ++i) {
+//         // Deal with controls first
+//         for(int j = 0; j < num_legs; ++j) {
+//             if (foot_contact_states[i*num_legs + j] == 0) {
+//                 continue;
+//             }
+//             if (is_diagonal) {
+//                 for (int index = 0; index < 3; ++index) {
+//                     // This is for gradient vector
+//                     (*out)[buffer_index] = vec[24*i + 3*j + index];
+//                     ++buffer_index;
+//                 }
+//             } else {
+//                 for (int index = 0; index < 3; ++index) {
+//                     // This is for force bounds
+//                     (*out)[force_buffer_index] = vec[12*planning_horizon + i*num_legs*5 + j*5 + index];
+//                     ++force_buffer_index;
+//                 }
+//             }
+//         }
+//         // Deal with states later
+//         if (is_diagonal){
+//             // g-vec
+//             for (int index = 0; index < 12; ++index) {
+//                 (*out)[buffer_index] = vec[24*i + 12 + index];
+//                 ++buffer_index;
+//             }
+//         } else {
+//             // bounds
+//             for (int index = 0; index < 12; ++index) {
+//                 (*out)[buffer_index] = vec[i*12 + index];
+//                 ++buffer_index;
+//             }
+//         }
+//     }
+// }
+
+// // Auxiliary function for copying data to qpOASES data structure.
+// void RFCopyToMatrix(const Eigen::MatrixXd& input,
+//                   const std::vector<double> foot_contact_states, int num_legs,
+//                   int planning_horizon, bool is_block_diagonal,
+//                   Eigen::Map<RowMajorMatrixXd>* out) {
+//     // the block index in the destination matrix.
+//     int col_blk = 0;
+//     int row_blk = 12*planning_horizon;
+//     for (int i = 0; i < planning_horizon; ++i) {
+//         // Deal with controls first
+//         for(int j = 0; j < num_legs; ++j) {
+//             if (foot_contact_states[i*num_legs + j] == 0) {
+//                 // skip the column (and row if diagonal)
+//                 continue;
+//             }
+//             if (is_block_diagonal) {
+//                 // This is for Hessian matrix
+//                 out->block(col_blk, col_blk, 3, 3) = input.block(i*24 + j*3, i*24 + j*3, 3, 3);
+//             } else {
+//                 // This is for the constraint matrix
+//                 out->block(0, col_blk, 12*planning_horizon, 3) =
+//                     input.block(0, i*24+j*3, 12*planning_horizon, 3); // we get the states constraints first
+//                 // don't need the rest of the rows since they're all zeros
+//                 out->block(row_blk, col_blk, 5, 3) = 
+//                     input.block(12*planning_horizon + (i*num_legs+j)*5, i*24+j*3, 5, 3); // we get the force constraints second
+//             }
+//             row_blk += 5;
+//             col_blk += 3;
+//         }
+//         // Deal with states later
+//         if (is_block_diagonal) {
+//             // Copy the state weights
+//             out->block(col_blk, col_blk, 12, 12) = input.block(i*24 + 12, i*24 + 12, 12, 12);
+//         } else {
+//             // Copy state constrainst only since the rest are zeros
+//             out->block(0, col_blk, 12*planning_horizon, 12) = 
+//                 input.block(0, i*24 + 12, 12*planning_horizon, 12);
+//         }
+//         col_blk += 12;
+//     }
+// }
+
 MatrixXd RFAsBlockDiagonalMat(const std::vector<double>& qp_weights,
     int planning_horizon) {
     const Eigen::Map<const VectorXd> qp_weights_vec(qp_weights.data(),
@@ -222,7 +308,6 @@ private:
     Eigen::MatrixXd contact_states_;        // horizon x num_legs
     Eigen::MatrixXd foot_positions_base_;   // num_legs x 3
     Eigen::MatrixXd foot_positions_world_;  // num_legs x 3
-    Eigen::VectorXd foot_friction_coeff_;   // num_legs
     
     // Dynamics: x' = Ax + Bd_u + D
     Eigen::MatrixXd a_mat_;            // 12 x 12
@@ -238,6 +323,7 @@ private:
     Eigen::VectorXd constraint_lb_;  // (5 * num_legs + 12) * horizon
     Eigen::VectorXd constraint_ub_;  // (5 * num_legs + 12) * horizon
 
+    std::unique_ptr<qpOASES::QProblem> qp_problem_;
     std::vector<double> qp_solution_;
     
     ::OSQPWorkspace* workspace_;
@@ -288,9 +374,7 @@ void CalculateAMat(const double dt,
     for (int i = 0; i < 4; i++) {
         // Vector3d tau_foot = HatMap(foot_positions.row(i).transpose() - com_pos) * f_op.row(i).transpose();
         Vector3d tau_foot = HatMap(foot_positions.row(i).transpose()) * f_op.row(i).transpose(); // don't have to subtract com_pos because this is already a displacement
-        Mop[0] += tau_foot[0];
-        Mop[1] += tau_foot[1];
-        Mop[2] += tau_foot[2];
+        Mop += tau_foot;
     }
     
     Eigen::RowVector3d k_trans = Mop.transpose() * base_rot_mat;
@@ -362,10 +446,8 @@ void CalculateDMat(double dt,
 
     Vector3d Mop(0, 0, 0);
     for (int i = 0; i < 4; i++) {
-        Vector3d tau_foot = HatMap(foot_positions.row(i).transpose()) * f_op.row(i).transpose(); // don't have to subtract com_pos because this is already a displacement
-        Mop[0] += tau_foot[0];
-        Mop[1] += tau_foot[1];
-        Mop[2] += tau_foot[2];
+        Vector3d tau_foot = HatMap(foot_positions.row(i).transpose()) * f_op.row(i).transpose();
+        Mop += tau_foot;
     }
     Vector3d sum_fop = f_op.colwise().sum();
     const int num_legs = foot_positions.rows();
@@ -405,17 +487,32 @@ void CalculateQpMats(const MatrixXd& a_mat,
     VectorXd& g_vec = *g_vec_ptr;
 
     for (int i = 0; i < horizon; i++) {
+        // flattened R_des stored in row-major fashion, so unrolling it out in col-major fashion gives us R_des.T    
+        Matrix3d des_rot_mat_transposed = desired_states.segment(i*18 + 6, 9).reshaped(3, 3); // default is column-major
+
         // quadratic terms
         H_mat.block<action_dim, action_dim>(i*total_dim, i*total_dim) = alpha_single;
         H_mat.block<state_dim, state_dim>(i*total_dim + action_dim, i*total_dim + action_dim) = qp_weights_single;
+
+        // H_mat.block<3, 3>(i*total_dim + action_dim + 6, i*total_dim + action_dim + 6) += qp_weights_single.block<3, 3>(9, 9) *
+        //         HatMap((des_rot_mat_transposed * base_rot_mat).transpose() * desired_states.segment(i*18 + 15, 3));
+        // // Cross-terms
+        // H_mat.block<3, 3>(i*total_dim + action_dim + 9, i*total_dim + action_dim + 6) = qp_weights_single.block<3, 3>(9, 9) *
+        //         HatMap((des_rot_mat_transposed * base_rot_mat).transpose() * desired_states.segment(i*18 + 15, 3));
+        // H_mat.block<3, 3>(i*total_dim + action_dim + 6, i*total_dim + action_dim + 9) = 
+        //         H_mat.block<3, 3>(i*total_dim + action_dim + 9, i*total_dim + action_dim + 6).transpose();
+
         // linear terms
         g_vec.segment(i*total_dim, action_dim) = alpha_single * (f_op - f_d).reshaped<Eigen::RowMajor>(); // should be alpha_single.transpose() but alpha is constant anyway
         g_vec.segment(i*total_dim + action_dim, 6) = -qp_weights_single.block<6, 6>(0, 0) * desired_states.segment(i*18, 6); // com_pos and com_vel
-        // flattened R_des stored in row-major fashion, so unrolling it out in col-major fashion gives us R_des.T    
-        Matrix3d des_rot_mat_transposed = desired_states.segment(i*18 + 6, 9).reshaped(3, 3); // default is column-major
         g_vec.segment(i*total_dim + action_dim + 6, 3) = 
             qp_weights_single.block<3, 3>(6, 6) * VeeMap((des_rot_mat_transposed * base_rot_mat).log()); // rotation matrix error
         g_vec.segment(i*total_dim + action_dim + 9, 3) = -qp_weights_single.block<3, 3>(9, 9) * desired_states.segment(i*18 + 15, 3); // ang_vel
+        // g_vec.segment(i*total_dim + action_dim + 6, 3) += - desired_states.segment(i*18 + 15, 3).transpose() * des_rot_mat_transposed * base_rot_mat
+        //         * qp_weights_single.block<3, 3>(9, 9) * 
+        //         HatMap((des_rot_mat_transposed * base_rot_mat).transpose() * desired_states.segment(i*18 + 15, 3));
+        // g_vec.segment(i*total_dim + action_dim + 9, 3) = -qp_weights_single.block<3, 3>(9, 9) * 
+        //         base_rot_mat.transpose() * des_rot_mat_transposed.transpose() * desired_states.segment(i*18 + 15, 3);
     }
 }
 
@@ -539,7 +636,6 @@ RFConvexMpc::RFConvexMpc(double mass, const std::vector<double>& inertia,
     contact_states_(planning_horizon, num_legs),
     foot_positions_base_(num_legs, k3Dim),
     foot_positions_world_(num_legs, k3Dim),
-    foot_friction_coeff_(num_legs_),
     a_mat_(kStateDim, kStateDim),
     b_mat_(kStateDim, action_dim_),
     d_mat_(kStateDim, 1),
@@ -563,7 +659,6 @@ RFConvexMpc::RFConvexMpc(double mass, const std::vector<double>& inertia,
     contact_states_.setZero();
     foot_positions_base_.setZero();
     foot_positions_world_.setZero();
-    foot_friction_coeff_.setZero();
     a_mat_.setZero();
     b_mat_.setZero();
     d_mat_.setZero();
@@ -611,6 +706,9 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
     rotation_ = Eigen::Map<const Matrix3d>(base_rot_mat.data()).transpose(); // base_rot_mat saved in row-major order but Eigen stores in col-major
     ang_vel = Eigen::Map<const Vector3d>(com_angular_velocity.data());
 
+    // Vector3d des_ang_vel = Eigen::Map<const Vector3d>(desired_com_angular_velocity.data());
+    // Matrix3d des_rot_mat = rotation_;
+
     // Compute feet displacements from CoM in world frame
     DCHECK_EQ(foot_positions_body_frame.size(), k3Dim * num_legs_);
     foot_positions_base_ = Eigen::Map<const MatrixXd>(foot_positions_body_frame.data(), k3Dim, num_legs_).transpose();
@@ -625,21 +723,25 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
 
     for (int i = 0; i < planning_horizon_; ++i) {
         // Position
-        desired_states_[i * 18 + 0] =
-            timestep_ * (i + 1) * desired_com_velocity[0];
-        desired_states_[i * 18 + 1] =
-            timestep_ * (i + 1) * desired_com_velocity[1];
+        desired_states_[i * 18 + 0] = desired_com_position[0];
+        desired_states_[i * 18 + 1] = desired_com_position[1];
+        // desired_states_[i * 18 + 0] = com_position[0] +
+        //     timestep_ * (i + 1) * desired_com_velocity[0];
+        // desired_states_[i * 18 + 1] = com_position[1] +
+        //     timestep_ * (i + 1) * desired_com_velocity[1];
         desired_states_[i * 18 + 2] = desired_com_position[2];
 
         // Velocity
         desired_states_[i * 18 + 3] = desired_com_velocity[0];
         desired_states_[i * 18 + 4] = desired_com_velocity[1];
-        desired_states_[i * 18 + 5] = 0; // Prefer to stablize the body height.
+        desired_states_[i * 18 + 5] = desired_com_velocity[2];
 
         // Rotation matrix
+        // des_rot_mat += timestep_ * (des_rot_mat * HatMap(des_ang_vel));
+        // desired_states_.segment(i*18 + 6, 9) = des_rot_mat.reshaped<Eigen::RowMajor>();
         desired_states_.segment(i*18 + 6, 9) = Eigen::Map<VectorXd>(desired_base_rot_mat.data(), 9); // row-major
 
-        // Prefer to stablize roll and pitch.
+        // Angular velocity
         desired_states_[i * 18 + 15] = desired_com_angular_velocity[0];
         desired_states_[i * 18 + 16] = desired_com_angular_velocity[1];
         desired_states_[i * 18 + 17] = desired_com_angular_velocity[2];
@@ -660,8 +762,6 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
 
     // Get desired foot force
     MatrixXd f_d = Eigen::Map<const MatrixXd>(desired_foot_force.data(), k3Dim, num_legs_).transpose();
-    // Vector3d f_trot_d(0., 0., kGravity*mass_/4);
-    // MatrixXd f_d = f_trot_d.replicate(1, 4).transpose();
     
     // Get H and g matrices
     CalculateQpMats(a_mat_, b_mat_, d_mat_,
@@ -677,16 +777,11 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
                               mass_ * kGravity * kMinScale, foot_friction_coeffs[0],
                               planning_horizon_, com_pos, com_vel, ang_vel, f_op,
                               a_mat_, d_mat_, &constraint_lb_, &constraint_ub_);
-
     
-    if (qp_solver_name_ == OSQP)
-    {
+    UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
+                            a_mat_, b_mat_, &constraint_);
 
-      UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
-                              a_mat_, b_mat_, &constraint_);
-
-      foot_friction_coeff_ << foot_friction_coeffs[0], foot_friction_coeffs[1],
-          foot_friction_coeffs[2], foot_friction_coeffs[3];
+    if (qp_solver_name_ == OSQP) {
 
       Eigen::SparseMatrix<double, Eigen::ColMajor, qp_int64> objective_matrix = H_mat_.sparseView();
       Eigen::VectorXd objective_vector = g_vec_;
@@ -750,15 +845,8 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
       if (workspace_==0) {
           osqp_setup(&workspace_, &data, &settings);
           initial_run_ = false;
-      }
-      else {
+      } else {
 
-          UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
-                                  a_mat_, b_mat_, &constraint_);
-
-          foot_friction_coeff_ << foot_friction_coeffs[0], foot_friction_coeffs[1],
-              foot_friction_coeffs[2], foot_friction_coeffs[3];
-              
           c_int nnzP = objective_matrix_upper_triangle.nonZeros();
 
           c_int nnzA = constraint_matrix.nonZeros();
@@ -791,57 +879,106 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
           //LOG(WARNING) << "QP does not converge";
           return error_result;
       }
-      
-      return qp_solution_;
-    } else
-    {
-      
-    // Solve the QP Problem using qpOASES
-    UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
-                            a_mat_, b_mat_, &constraint_);
 
-    // Put in data structure QPOASES expects
-    // Hessian
-    std::vector<qpOASES::real_t> hessian(H_mat_.size());
-    Map<RowMajorMatrixXd>(hessian.data(), H_mat_.rows(), H_mat_.cols()) = H_mat_;
-    // Gradient
-    std::vector<qpOASES::real_t> g_vec(g_vec_.data(), g_vec_.data() + g_vec_.size());
-    // A_constraint
-    std::vector<qpOASES::real_t> a_mat(constraint_.size());
-    Map<RowMajorMatrixXd>(a_mat.data(), constraint_.rows(), constraint_.cols()) = constraint_;
-    // ub
-    std::vector<qpOASES::real_t> a_lb(constraint_lb_.data(), constraint_lb_.data() + constraint_lb_.size());
+    } else {
+        // Solve the QP Problem using qpOASES
 
-    std::vector<qpOASES::real_t> a_ub(constraint_ub_.data(), constraint_ub_.data() + constraint_ub_.size());
+        // Put in data structure QPOASES expects
+        // Hessian
+        std::vector<qpOASES::real_t> hessian(H_mat_.size());
+        Map<RowMajorMatrixXd>(hessian.data(), H_mat_.rows(), H_mat_.cols()) = H_mat_;
+        // Gradient
+        std::vector<qpOASES::real_t> g_vec(g_vec_.data(), g_vec_.data() + g_vec_.size());
+        // A_constraint
+        std::vector<qpOASES::real_t> a_mat(constraint_.size());
+        Map<RowMajorMatrixXd>(a_mat.data(), constraint_.rows(), constraint_.cols()) = constraint_;
+        // ub
+        std::vector<qpOASES::real_t> a_lb(constraint_lb_.data(), constraint_lb_.data() + constraint_lb_.size());
 
-    auto qp_problem = QProblem(H_mat_.rows(), constraint_.rows(), qpOASES::HST_UNKNOWN,
-                               qpOASES::BT_TRUE);
+        std::vector<qpOASES::real_t> a_ub(constraint_ub_.data(), constraint_ub_.data() + constraint_ub_.size());
 
-    qpOASES::Options options;
-    options.setToMPC();
-    options.printLevel = qpOASES::PL_NONE;
-    qp_problem.setOptions(options);
+        // int num_legs_in_contact_over_horizon = 0;
+        // for (int i = 0; i < foot_contact_states.size(); ++i) {
+        //     if (foot_contact_states[i]) {
+        //         // num_legs_in_contact += 1;
+        //         num_legs_in_contact_over_horizon += 1;
+        //     }
+        // }
 
-    int max_solver_iter = 100;
+        // const int qp_dim = num_legs_in_contact_over_horizon * k3Dim + kStateDim*planning_horizon_;
+        // const int constraint_dim = num_legs_in_contact_over_horizon * 5 + kStateDim*planning_horizon_;
 
-    qp_problem.init(hessian.data(), g_vec.data(), a_mat.data(), nullptr,
-                    nullptr, a_lb.data(), a_ub.data(), max_solver_iter,
-                    nullptr);
+        // // Hessian
+        // std::vector<qpOASES::real_t> hessian(qp_dim * qp_dim, 0);
+        // Map<RowMajorMatrixXd> hessian_mat_view(hessian.data(), qp_dim, qp_dim);
+        // RFCopyToMatrix(H_mat_, foot_contact_states, num_legs_, planning_horizon_, true, &hessian_mat_view);
 
-    std::vector<qpOASES::real_t> qp_sol(H_mat_.rows(), 0);
-    qp_problem.getPrimalSolution(qp_sol.data());
-    // for (auto& force : qp_sol) {
-    //   force = -force;
-    // }
-    Map<VectorXd> qp_sol_vec(qp_sol.data(), qp_sol.size());
+        // // Gradient
+        // std::vector<qpOASES::real_t> g_vec(qp_dim, 0);
+        // RFCopyToVec(g_vec_, foot_contact_states, num_legs_, planning_horizon_, true, &g_vec);
 
-    for (int i = 0; i < qp_sol.size(); ++i) {
-        qp_solution_[i] = qp_sol[i];
-        qp_solution_[i] = qp_sol[i];
-        qp_solution_[i] = qp_sol[i];
-      }
+        // // Constraint matrix
+        // std::vector<qpOASES::real_t> a_mat(qp_dim * constraint_dim, 0);
+        // Map<RowMajorMatrixXd> a_mat_view(a_mat.data(), constraint_dim, qp_dim);
+        // RFCopyToMatrix(constraint_, foot_contact_states, num_legs_, planning_horizon_, false, &a_mat_view);
+        
+        // // Constraint bounds
+        // std::vector<qpOASES::real_t> a_lb(constraint_dim, 0);
+        // RFCopyToVec(constraint_lb_, foot_contact_states, num_legs_, planning_horizon_, false, &a_lb);
+
+        // std::vector<qpOASES::real_t> a_ub(constraint_dim, 0);
+        // RFCopyToVec(constraint_ub_, foot_contact_states, num_legs_, planning_horizon_, false, &a_ub);
+
+        // auto qp_problem = QProblem(qp_dim, constraint_dim, qpOASES::HST_UNKNOWN,
+        //                         qpOASES::BT_TRUE);
+
+        auto qp_problem = QProblem(constraint_.cols(), constraint_.rows(), qpOASES::HST_UNKNOWN,
+                                qpOASES::BT_TRUE);
+
+        qpOASES::Options options;
+        options.setToMPC();
+        options.printLevel = qpOASES::PL_NONE;
+        qp_problem.setOptions(options);
+
+        int max_solver_iter = 100;
+
+        qp_problem.init(hessian.data(), g_vec.data(), a_mat.data(), nullptr,
+                        nullptr, a_lb.data(), a_ub.data(), max_solver_iter,
+                        nullptr);
+
+        qp_problem.getPrimalSolution(qp_solution_.data());
+
+        // std::vector<qpOASES::real_t> qp_sol(qp_dim, 0);
+        // qp_problem.getPrimalSolution(qp_sol.data());
+        // for (auto& force : qp_sol) {
+        //   force = -force;
+        // }
+        // Map<VectorXd> qp_sol_vec(qp_sol.data(), qp_sol.size());
+
+        // Map from QPOASES reduced-variables solution into full solution
+        // int buffer_index = 0;
+        // for (int i = 0; i < planning_horizon_; ++i) {
+        //     for (int j = 0; j < num_legs_; ++j){
+        //         int index = i*24 + j*3;
+        //         if (foot_contact_states[i*num_legs_ + j] == 0) {
+        //             qp_solution_[index] = 0;
+        //             qp_solution_[index + 1] = 0;
+        //             qp_solution_[index + 2] = 0;
+        //         } else {
+        //             qp_solution_[index] = qp_sol[buffer_index];
+        //             qp_solution_[index + 1] = qp_sol[buffer_index + 1];
+        //             qp_solution_[index + 2] = qp_sol[buffer_index + 2];
+        //             buffer_index += 3;
+        //         }
+        //     }
+        //     for (int index = 0; index < 12; ++index) {
+        //         qp_solution_[24*i + 12 + index] = qp_sol[buffer_index];
+        //         ++buffer_index;
+        //     }
+        // }
 
     }
+
     return qp_solution_;
 }
 

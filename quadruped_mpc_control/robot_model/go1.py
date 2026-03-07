@@ -143,9 +143,15 @@ class Go1:
     def getFeetForce(self, leg):
         """Compute feet force in world frame
         """
+        total_force = np.zeros(3)
+
+        # gen_torque = np.hstack(([0]*6, self.data.ctrl), dtype=np.float32)
+        # J = self.computeLegJacobian(leg) # 3x18
+        # J_inv = np.linalg.pinv(J)        # 18x3
+        # total_force += J_inv.T @ gen_torque
+
         foot_geom_name = self._feetName[leg]
         foot_geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, foot_geom_name)
-        total_force = np.zeros(3)
         contact = self.data.contact
 
         # Iterate over all active contacts

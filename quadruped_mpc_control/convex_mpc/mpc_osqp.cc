@@ -641,8 +641,8 @@ std::vector<double> ConvexMpc::ComputeContactForces(
 
     // In MPC planning we don't care about absolute position in the horizontal
     // plane.
-    const double com_x = 0;
-    const double com_y = 0;
+    const double com_x = com_position[1];
+    const double com_y = com_position[2];
 
     // Prepare the current and desired state vectors of length kStateDim *
     // planning_horizon.
@@ -656,14 +656,17 @@ std::vector<double> ConvexMpc::ComputeContactForces(
     for (int i = 0; i < planning_horizon_; ++i) {
         desired_states_[i * kStateDim + 0] = desired_com_roll_pitch_yaw[0];
         desired_states_[i * kStateDim + 1] = desired_com_roll_pitch_yaw[1];
-        desired_states_[i * kStateDim + 2] =
-            com_roll_pitch_yaw[2] +
-            timestep_ * (i + 1) * desired_com_angular_velocity[2];
+        // desired_states_[i * kStateDim + 2] =
+        //     com_roll_pitch_yaw[2] +
+        //     timestep_ * (i + 1) * desired_com_angular_velocity[2];
+        desired_states_[i * kStateDim + 2] = desired_com_roll_pitch_yaw[2];
 
-        desired_states_[i * kStateDim + 3] =
-            timestep_ * (i + 1) * desired_com_velocity[0];
-        desired_states_[i * kStateDim + 4] =
-            timestep_ * (i + 1) * desired_com_velocity[1];
+        // desired_states_[i * kStateDim + 3] =
+        //     timestep_ * (i + 1) * desired_com_velocity[0];
+        // desired_states_[i * kStateDim + 4] =
+        //     timestep_ * (i + 1) * desired_com_velocity[1];
+        desired_states_[i * kStateDim + 3] = desired_com_position[0];
+        desired_states_[i * kStateDim + 4] = desired_com_position[1];
         desired_states_[i * kStateDim + 5] = desired_com_position[2];
 
         // Prefer to stablize roll and pitch.
@@ -674,7 +677,8 @@ std::vector<double> ConvexMpc::ComputeContactForces(
         desired_states_[i * kStateDim + 9] = desired_com_velocity[0];
         desired_states_[i * kStateDim + 10] = desired_com_velocity[1];
         // Prefer to stablize the body height.
-        desired_states_[i * kStateDim + 11] = 0;
+        // desired_states_[i * kStateDim + 11] = 0;
+        desired_states_[i * kStateDim + 10] = desired_com_velocity[2];
 
         desired_states_[i * kStateDim + 12] = -kGravity;
     }
@@ -716,14 +720,13 @@ std::vector<double> ConvexMpc::ComputeContactForces(
         foot_friction_coeffs[0], planning_horizon_,
         &constraint_lb_, &constraint_ub_);
     
-    
-    if (qp_solver_name_ == OSQP)
-    {
-      UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
+    UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
           &constraint_);
-      foot_friction_coeff_ << foot_friction_coeffs[0], foot_friction_coeffs[1],
+
+    foot_friction_coeff_ << foot_friction_coeffs[0], foot_friction_coeffs[1],
           foot_friction_coeffs[2], foot_friction_coeffs[3];
 
+    if (qp_solver_name_ == OSQP) {
 
       Eigen::SparseMatrix<double, Eigen::ColMajor, qp_int64> objective_matrix = p_mat_.sparseView();
       Eigen::VectorXd objective_vector = q_vec_;
@@ -784,16 +787,15 @@ std::vector<double> ConvexMpc::ComputeContactForces(
 
       const int return_code = 0;
       
-      if (workspace_==0) {
+      if (workspace_==nullptr) {
           osqp_setup(&workspace_, &data, &settings);
           initial_run_ = false;
-      }
-      else {
+      } else {
 
-          UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_,
-              num_legs_, &constraint_);
-          foot_friction_coeff_ << foot_friction_coeffs[0], foot_friction_coeffs[1],
-              foot_friction_coeffs[2], foot_friction_coeffs[3];
+        //   UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_,
+        //       num_legs_, &constraint_);
+        //   foot_friction_coeff_ << foot_friction_coeffs[0], foot_friction_coeffs[1],
+        //       foot_friction_coeffs[2], foot_friction_coeffs[3];
               
           c_int nnzP = objective_matrix_upper_triangle.nonZeros();
 
@@ -827,12 +829,12 @@ std::vector<double> ConvexMpc::ComputeContactForces(
           return error_result;
       }
       
-      return qp_solution_;
+      // return qp_solution_;
     } else {
         
         // Solve the QP Problem using qpOASES
-        UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
-                                &constraint_);
+        // UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
+        //                         &constraint_);
 
         // To use qpOASES, we need to eleminate the zero rows/cols from the
         // matrices when copy to qpOASES buffer
@@ -892,25 +894,26 @@ std::vector<double> ConvexMpc::ComputeContactForces(
         for (auto& force : qp_sol) {
         force = -force;
         }
-        Map<VectorXd> qp_sol_vec(qp_sol.data(), qp_sol.size());
+        // Map<VectorXd> qp_sol_vec(qp_sol.data(), qp_sol.size());
 
         // Map from QPOASES reduced-variables solution into full solution
         int buffer_index = 0;
         for (int i = 0; i < num_legs_ * planning_horizon_; ++i) {
-        // int leg_id = i % num_legs_;
-        if (foot_contact_states[i] == 0) {
-            qp_solution_[i * k3Dim] = 0;
-            qp_solution_[i * k3Dim + 1] = 0;
-            qp_solution_[i * k3Dim + 2] = 0;
-        } else {
-            qp_solution_[i * k3Dim] = qp_sol[buffer_index * k3Dim];
-            qp_solution_[i * k3Dim + 1] = qp_sol[buffer_index * k3Dim + 1];
-            qp_solution_[i * k3Dim + 2] = qp_sol[buffer_index * k3Dim + 2];
-            ++buffer_index;
+            // int leg_id = i % num_legs_;
+            if (foot_contact_states[i] == 0) {
+                qp_solution_[i * k3Dim] = 0;
+                qp_solution_[i * k3Dim + 1] = 0;
+                qp_solution_[i * k3Dim + 2] = 0;
+            } else {
+                qp_solution_[i * k3Dim] = qp_sol[buffer_index * k3Dim];
+                qp_solution_[i * k3Dim + 1] = qp_sol[buffer_index * k3Dim + 1];
+                qp_solution_[i * k3Dim + 2] = qp_sol[buffer_index * k3Dim + 2];
+                ++buffer_index;
+            }
         }
-        }
-        return qp_solution_;
+        // return qp_solution_;
     }
+    return qp_solution_;
 }
 
 

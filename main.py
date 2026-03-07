@@ -35,16 +35,21 @@ trotting = Gait(mpc_horizon, 10,
                 [0, 5, 5, 0], 
                 [5, 5, 5, 5], "Trotting")
 
-mpc_weights = np.array([5.0, 5.0, 0.0,
-                        0.0, 0.0, 10.,
-                        0.0, 0.0, 1.0,
-                        1.0, 1.0, 0.0,
-                        0.0], dtype=np.float32)
+# mpc_weights = np.array([5.0, 5.0, 0.0,
+#                         0.0, 0.0, 10.,
+#                         0.0, 0.0, 5.0,
+#                         1.0, 1.0, 0.0,
+#                         0.0], dtype=np.float32)
 
-rf_mpc_weights = np.array([0.0, 0.0, 3E5,
-                           1E4, 1E4, 1E3,
-                           1E4, 1E4, 1E2,
-                           1E1, 1E1, 1E5], dtype=np.float32)
+# rf_mpc_weights = np.array([0.0, 0.0, 1E6,
+#                            1E5, 1E5, 1E2,
+#                            1E5, 1E5, 0.0,
+#                            1E3, 1E3, 1E5], dtype=np.float32) # this is good for following velocity commands
+
+rf_mpc_weights = np.array([1E4, 1E4, 1E6,
+                           0.0, 0.0, 1E3,
+                           1E5, 1E5, 1E5,
+                           1E4, 1E4, 0.0], dtype=np.float32) # this is good for following desired positions and yaw
 
 # Reset simulation
 go1.reset()
@@ -54,14 +59,14 @@ go1.update() # need this so qpos and qvel is updated
 state_estimator = StateEstimator(go1)
 stance_control = StanceLegControlRFMPC(horizonLength=mpc_horizon, robot=go1, dtMpc=mpc_dt, gait=trotting, state_estimator=state_estimator, qp_solver="OSQP", mpc_weights=rf_mpc_weights)
 swing_control = SwingLegControlRaibert(robot=go1, dtMPC=mpc_dt, dt=ctrl_dt, gait=trotting, state_estimator=state_estimator)
-# stance_control = StanceLegControlMPC(horizonLength=mpc_horizon, robot=go1, dtMpc=mpc_dt, gait=trotting, state_estimator=state_estimator, qp_solver="QPOASES", mpc_weights=mpc_weights)
+# stance_control = StanceLegControlMPC(horizonLength=mpc_horizon, robot=go1, dtMpc=mpc_dt, gait=trotting, state_estimator=state_estimator, qp_solver="OSQP", mpc_weights=mpc_weights)
 
 viewer = mujoco_viewer.MujocoViewer(model, data, hide_menus=False)
 viewer._render_every_frame = False
 
 print("Press ESC to exit")
 
-command = [0., 1., 0.]
+command = [0.0, 0., 0.0]
 stance_control.updateCommand(command)
 swing_control.updateCommand(command)
 
@@ -80,6 +85,8 @@ while True:
 
         action += mpc_action
         ctrl_iter += 1
+
+        # print(go1.getTrueBasePosition())
 
     # Apply actions
     go1.apply_action(action)
