@@ -54,7 +54,7 @@ def compute_foot_trajectory(p0, pf, height, phase, swing_time):
 
 Kp = np.diag([700., 700., 150.])
 Kd = np.diag([10., 10., 10.])
-class SwingLegControlSimple():
+class SwingLegControlRaibert():
     def __init__(self, robot: Go1, dtMPC: float = 0.03, dt: float = 0.01,
                  gait = trotting, state_estimator : StateEstimator = None):
         self._robot = robot
@@ -90,7 +90,7 @@ class SwingLegControlSimple():
         self._iterations = 0
 
     def updateCommand(self, command):
-        """Update desired velocity and yaw rate
+        """Update desired velocity and yaw rate (body frame)
         """
         self.desired_speed = np.array([command[0], command[1]])
         self.desired_yaw_rate = command[2]
@@ -121,58 +121,56 @@ class SwingLegControlSimple():
 
         self._last_leg_state = copy.deepcopy(new_leg_state)
 
-    def get_feet_pos(self):
-        """Compute desired feet positions
-        """
+    def get_feet_pos(self, ground_rot_mat):
         # Get data
-        com_pos = self._state_estimator.com_pos
-        com_vel = self._state_estimator.com_linvel_world
-        base_rot_mat = self._robot.getBaseRotMat()
+        com_pos_ground = ground_rot_mat.T @ self._state_estimator.com_pos
+        com_vel_ground = ground_rot_mat.T @ self._state_estimator.com_linvel_world
+        # com_ang_vel = self._state_estimator.com_angvel_body
+        com_ang_vel_ground = ground_rot_mat.T @ self._state_estimator.com_angvel_world
+        base_rot_mat_ground = ground_rot_mat.T @ self._robot.getBaseRotMat() # rotation matrix for body expressed in ground (ground to body in my lexicon)
 
         # Set swing leg final position
-        pF = {}
+        pF_ground = {}
         sideSign = [-1, 1, -1, 1]
-        p_rel_max = 0.03
-        # To correct for yaw rate
-        stance_time = self._gait.getStanceTime(self._dtMPC)
-        # get rotation matrix from robot frame to yaw-corrected robot frame (actually the invert of that)
-        yaw_corrected = -self.desired_yaw_rate * stance_time / 2
-        R_yaw_corrected = np.array([
-            [np.cos(yaw_corrected), -np.sin(yaw_corrected), 0.],
-            [np.sin(yaw_corrected), np.cos(yaw_corrected), 0.],
-            [0., 0., 1.]
-        ])
-        v_des = np.hstack((self.desired_speed, 0.0))
-        v_des_world = base_rot_mat @ v_des
+
+        # Raibert Heuristics
+        # stance_time = self._gait.getStanceTime(self._dtMPC)
+        v_des_ground = base_rot_mat_ground @ np.hstack((self.desired_speed, 0.0))
 
         for i in self._pI.keys():
+            pI_ground = ground_rot_mat.T @ self._pI[i]
+
             # make sure robot foot is in the plane of hip angle = 0
             offset = np.array([0., sideSign[i]*self._robot._abadLinkLength, 0])
-            pRobotFrame = self._robot.getHipLocation(i) + offset
-            # get the hip position in yaw-corrected frame (new robot local frame)
-            pYawCorrected = R_yaw_corrected @ pRobotFrame
-            # propagate velocity in the yaw corrected frame
-            pF[i] = com_pos + base_rot_mat @ (pYawCorrected + v_des * self._swing_time_remaining[i])
-            # MORE CORRECTION
-            # 1. predict where robot will be, 2. correct for actual velocity instead of desired, 3. correct for xy offset due to yaw
-            pfx_rel = com_vel[0] * (0.5) * stance_time + \
-                      0.03 * (com_vel[0] - v_des_world[0]) + \
-                      (0.5 * com_pos[2] / 9.81) * (com_vel[1] * self.desired_yaw_rate)
-            pfy_rel = com_vel[1] * 0.5 * stance_time + \
-                      0.03 * (com_vel[1] - v_des_world[1]) + \
-                      (0.5 * com_pos[2] / 9.81) * (-com_vel[0] * self.desired_yaw_rate)
-    
-            pfx_rel = min(max(pfx_rel, -p_rel_max), p_rel_max)
-            pfy_rel = min(max(pfy_rel, -p_rel_max), p_rel_max)
-            pF[i][0] += pfx_rel
-            pF[i][1] += pfy_rel
-            pF[i][2] = 0. # for clearance
-        
-        return pF
+            rHipRobotFrame = self._robot.getHipLocation(i) + offset
+            # hip displacement from CoM in ground frame
+            rHipGround = base_rot_mat_ground @ rHipRobotFrame
 
-    def get_action(self):
+            # # hip velocity in world frame
+            # vHipWorld = com_vel + base_rot_mat @ np.cross(com_ang_vel, pHipRobotFrame)
+            # v_i_world = v_com_world + w_com_world x delta_r_i_world
+            # v_i_base  = v_com_base  + w_com_base  x delta_r_i_base
+            
+            # hip velocity in world frame
+            vHipGround = com_vel_ground + np.cross(com_ang_vel_ground, rHipGround)
+            # target hip velocity
+            wHipGroundDes = base_rot_mat_ground @ np.array([0., 0., self.desired_yaw_rate])
+            vHipGroundDes = v_des_ground + np.cross(wHipGroundDes, rHipGround)
+
+            # Offset from hip, not from CoM
+            pF_ground[i] = com_pos_ground + rHipGround + vHipGround * self._swing_time_remaining[i] + 0.03 * (vHipGround - vHipGroundDes)
+            pF_ground[i][2] = pI_ground[2] # want final position to be on the same level as initial position
+
+        return pF_ground
+
+    def get_action(self, ground_normal_vec = np.array([0., 0., 1.], dtype=DTYPE)):
         """Get motor torques
         """
+        ground_z = ground_normal_vec / np.linalg.norm(ground_normal_vec)
+        ground_y = np.cross(ground_z, [1., 0., 0.])
+        ground_x = np.cross(ground_y, ground_z)
+        ground_rot_mat = np.column_stack((ground_x, ground_y, ground_z))
+
         # get leg data
         swing_phases = self._gait.getSwingProgress()
         leg_state = self._gait.getLegStates()
@@ -185,13 +183,24 @@ class SwingLegControlSimple():
                 if i in self._pI:
                     self._pI.pop(i)
 
-        pF = self.get_feet_pos()
+        pF_ground = self.get_feet_pos(ground_rot_mat)
 
         # compute force for each swing foot to follow desired trajectory
         spatial_forces = {}
         for i, pI in self._pI.items():
-            pDes, vDes = compute_foot_trajectory(pI, pF[i], self._desired_height, swing_phases[i], self._swing_time)
-            spatial_forces[i] = Kp@(pDes - feet_pos[i,:]) + Kd@(vDes - feet_vel[i,:])
+            # want swing trajectory to be perpendicular to ground
+            pI_ground = ground_rot_mat.T @ pI
+            pDesGround, vDesGround = compute_foot_trajectory(pI_ground, pF_ground[i], self._desired_height, swing_phases[i], self._swing_time)
+            footPosGround = ground_rot_mat.T @ feet_pos[i, :]
+            footVelGround = ground_rot_mat.T @ feet_vel[i, :]
+            force_ground  = Kp@(pDesGround - footPosGround) + Kd@(vDesGround - footVelGround)
+            
+            # transform back to world frame for tracking
+            spatial_forces[i] = ground_rot_mat @ force_ground
+            
+            # pDes = ground_rot_mat @ pDesGround
+            # vDes = ground_rot_mat @ vDesGround
+            # spatial_forces[i] = Kp@(pDes - feet_pos[i,:]) + Kd@(vDes - feet_vel[i,:])
 
         # print(f"Swing: {spatial_forces}")
 
@@ -208,46 +217,3 @@ class SwingLegControlSimple():
         self.gait_update()
 
         return action
-
-class SwingLegControlRaibert(SwingLegControlSimple):
-    def __init__(self, robot, dtMPC = 0.03, dt = 0.01, gait=trotting, state_estimator = None):
-        super().__init__(robot, dtMPC, dt, gait, state_estimator)
-
-    def get_feet_pos(self):
-        # Get data
-        com_pos = self._state_estimator.com_pos
-        com_vel = self._state_estimator.com_linvel_world
-        # com_ang_vel = self._state_estimator.com_angvel_body
-        com_ang_vel_world = self._state_estimator.com_angvel_world
-        base_rot_mat = self._robot.getBaseRotMat()
-
-        # Set swing leg final position
-        pF = {}
-        sideSign = [-1, 1, -1, 1]
-
-        # Raibert Heuristics
-        stance_time = self._gait.getStanceTime(self._dtMPC)
-        v_des = np.hstack((self.desired_speed, 0.0))
-
-        for i in self._pI.keys():
-            # make sure robot foot is in the plane of hip angle = 0
-            offset = np.array([0., sideSign[i]*self._robot._abadLinkLength, 0])
-            rHipRobotFrame = self._robot.getHipLocation(i) + offset
-            # hip displacement from CoM in world frame
-            rHipWorld = base_rot_mat @ rHipRobotFrame
-
-            # # hip velocity in world frame
-            # vHipWorld = com_vel + base_rot_mat @ np.cross(com_ang_vel, pHipRobotFrame)
-            # v_i_world = v_com_world + w_com_world x delta_r_i_world
-            # v_i_base  = v_com_base  + w_com_base  x delta_r_i_base
-            
-            # hip velocity in world frame
-            vHipWorld = com_vel + np.cross(com_ang_vel_world, rHipWorld)
-            # target hip velocity
-            vHipWorldDes = base_rot_mat @ (v_des + np.cross([0., 0., self.desired_yaw_rate], rHipRobotFrame))
-
-            # Offset from hip, not from CoM
-            pF[i] = com_pos + rHipWorld + vHipWorld * stance_time / 2 + 0.03 * (vHipWorld - vHipWorldDes)
-            pF[i][2] = 0. # for clearance
-
-        return pF

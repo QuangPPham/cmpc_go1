@@ -195,10 +195,7 @@ void CalculateDMat(double dt,
                    MatrixXd& N, MatrixXd& N_inv);
 
 // Calculates the dense QP formulation of the discretized space time dynamics.
-void CalculateQpMats(const MatrixXd& a_mat,
-                     const MatrixXd& b_mat,
-                     const MatrixXd& d_mat,
-                     const MatrixXd& qp_weights_single,
+void CalculateQpMats(const MatrixXd& qp_weights_single,
                      const MatrixXd& alpha_single, 
                      int horizon,
                      const Matrix3d& base_rot_mat,
@@ -208,9 +205,8 @@ void CalculateQpMats(const MatrixXd& a_mat,
                      MatrixXd* H_mat_ptr,
                      VectorXd* g_vec_ptr);
 
-// Constraints include linearized dynamics
-// And frictin cone and force bounds constraints
 void UpdateConstraintsMatrix(std::vector<double>& friction_coeff,
+                             Eigen::Matrix3d& ground_rot_mat,
                              int horizon,
                              int num_legs,
                              MatrixXd& a_mat,
@@ -221,6 +217,7 @@ void CalculateConstraintBounds(const MatrixXd& contact_state,
                                double fz_max,
                                double fz_min, 
                                double friction_coeff,
+                               Eigen::Matrix3d& ground_rot_mat,
                                int horizon,
                                Vector3d& com_pos,
                                Vector3d& com_vel,
@@ -254,22 +251,21 @@ public:
         osqp_cleanup(workspace_);
     }
 
-    // Angular velocity is measured in body frame
-    // Everything else is in world frame unless specified otherwise
-    std::vector<double> ComputeContactForces(
+        std::vector<double> ComputeContactForces(
             std::vector<double> com_position,
             std::vector<double> com_velocity,
-            std::vector<double> base_rot_mat, // (9, 1)
+            std::vector<double> base_rot_mat, // (9,)
             std::vector<double> com_angular_velocity,
-            std::vector<double> foot_force, // (12, 1)
+            std::vector<double> foot_force, // (12,)
             std::vector<double> foot_contact_states,
-            std::vector<double> foot_positions_body_frame, // (12, 1) foot displacements, not "positions"
+            std::vector<double> foot_positions_body_frame, // (12,) foot displacements, not "positions"
             std::vector<double> foot_friction_coeffs,
+            std::vector<double> ground_normal_vec,
             std::vector<double> desired_com_position,
             std::vector<double> desired_com_velocity,
-            std::vector<double> desired_base_rot_mat, // (9, 1)
+            std::vector<double> desired_base_rot_mat, // (9,)
             std::vector<double> desired_com_angular_velocity,
-            std::vector<double> desired_foot_force);  // (12, `)
+            std::vector<double> desired_foot_force);  // (12,)
 
     // Reset the solver so that for the next optimization run the solver is
     // re-initialized.
@@ -372,7 +368,6 @@ void CalculateAMat(const double dt,
 
     Vector3d Mop(0, 0, 0);
     for (int i = 0; i < 4; i++) {
-        // Vector3d tau_foot = HatMap(foot_positions.row(i).transpose() - com_pos) * f_op.row(i).transpose();
         Vector3d tau_foot = HatMap(foot_positions.row(i).transpose()) * f_op.row(i).transpose(); // don't have to subtract com_pos because this is already a displacement
         Mop += tau_foot;
     }
@@ -466,10 +461,7 @@ void CalculateDMat(double dt,
     d_mat.block<3, 1>(9, 0) = dt * inv_inertia * Cc;
 }
 
-void CalculateQpMats(const MatrixXd& a_mat,
-                     const MatrixXd& b_mat,
-                     const MatrixXd& d_mat,
-                     const MatrixXd& qp_weights_single,
+void CalculateQpMats(const MatrixXd& qp_weights_single,
                      const MatrixXd& alpha_single, 
                      int horizon,
                      const Matrix3d& base_rot_mat,
@@ -517,6 +509,7 @@ void CalculateQpMats(const MatrixXd& a_mat,
 }
 
 void UpdateConstraintsMatrix(std::vector<double>& friction_coeff,
+                             Eigen::Matrix3d& ground_rot_mat,
                              int horizon,
                              int num_legs,
                              MatrixXd& a_mat,
@@ -529,6 +522,16 @@ void UpdateConstraintsMatrix(std::vector<double>& friction_coeff,
     const int total_dim = state_dim + act_dim;
 
     MatrixXd& constraint = *constraint_ptr;
+
+    MatrixXd c_mat_world(constraint_dim, k3Dim);
+    c_mat_world << -1, 0, friction_coeff[0], 
+                    1, 0, friction_coeff[1], 
+                    0,-1, friction_coeff[2],
+                    0, 1, friction_coeff[3], 
+                    0, 0, 1;
+
+    // C @ f_g = C @ R.T @ f_w
+    MatrixXd c_mat_ground = c_mat_world * ground_rot_mat.transpose();
 
     // Dynamics constraints
     for (int i = 0; i < horizon; ++i) {
@@ -545,12 +548,7 @@ void UpdateConstraintsMatrix(std::vector<double>& friction_coeff,
         for (int j = 0; j < num_legs; ++j) {
             int row_idx = state_dim*horizon + (i*num_legs+j) * constraint_dim;
             int col_idx = (i * total_dim) + (j * k3Dim);
-            constraint.block<constraint_dim, k3Dim>(row_idx, col_idx)
-                << -1, 0, friction_coeff[0],
-                    1, 0, friction_coeff[1],
-                    0,-1, friction_coeff[2],
-                    0, 1, friction_coeff[3],
-                    0, 0, 1;
+            constraint.block<constraint_dim, k3Dim>(row_idx, col_idx) = c_mat_ground;
         }
     }
 }
@@ -559,6 +557,7 @@ void CalculateConstraintBounds(const MatrixXd& contact_state,
                                double fz_max,
                                double fz_min, 
                                double friction_coeff,
+                               Eigen::Matrix3d& ground_rot_mat,
                                int horizon,
                                Vector3d& com_pos,
                                Vector3d& com_vel,
@@ -580,6 +579,9 @@ void CalculateConstraintBounds(const MatrixXd& contact_state,
           0, 0, 0,
           ang_vel(0), ang_vel(1), ang_vel(2);
 
+    // f_g.T = f_w.T @ (R.T).T
+    MatrixXd f_op_ground = f_op * ground_rot_mat;
+
     int num_legs = contact_state.cols();
 
     VectorXd& constraint_lb = *constraint_lb_ptr;
@@ -597,19 +599,19 @@ void CalculateConstraintBounds(const MatrixXd& contact_state,
         // force and friction cones bounds (after dynamics = state_dim*horizon elements)
         for (int j = 0; j < num_legs; ++j) {
             const int row = state_dim*horizon + (i * num_legs + j) * constraint_dim;
-            constraint_lb(row + 0) =  f_op(j, 0) - friction_coeff * f_op(j, 2);
-            constraint_lb(row + 1) = -f_op(j, 0) - friction_coeff * f_op(j, 2);
-            constraint_lb(row + 2) =  f_op(j, 1) - friction_coeff * f_op(j, 2);
-            constraint_lb(row + 3) = -f_op(j, 1) - friction_coeff * f_op(j, 2);
-            constraint_lb(row + 4) = fz_min * contact_state(i, j) - f_op(j, 2); // want delta_u + u_op = 0 when feet not in contact
+            constraint_lb(row + 0) =  f_op_ground(j, 0) - friction_coeff * f_op_ground(j, 2);
+            constraint_lb(row + 1) = -f_op_ground(j, 0) - friction_coeff * f_op_ground(j, 2);
+            constraint_lb(row + 2) =  f_op_ground(j, 1) - friction_coeff * f_op_ground(j, 2);
+            constraint_lb(row + 3) = -f_op_ground(j, 1) - friction_coeff * f_op_ground(j, 2);
+            constraint_lb(row + 4) = fz_min * contact_state(i, j) - f_op_ground(j, 2); // want delta_u + u_op = 0 when feet not in contact
 
-            const double friction_ub =
+            const double friction_ub = // 1.0e20 * contact_state(i, j);
                 (friction_coeff + 1) * fz_max * contact_state(i, j);
-            constraint_ub(row + 0) = friction_ub + f_op(j, 0) - friction_coeff * f_op(j, 2);
-            constraint_ub(row + 1) = friction_ub - f_op(j, 0) - friction_coeff * f_op(j, 2);
-            constraint_ub(row + 2) = friction_ub + f_op(j, 1) - friction_coeff * f_op(j, 2);
-            constraint_ub(row + 3) = friction_ub - f_op(j, 1) - friction_coeff * f_op(j, 2);
-            constraint_ub(row + 4) = fz_max * contact_state(i, j) - f_op(j, 2);
+            constraint_ub(row + 0) = friction_ub + f_op_ground(j, 0) - friction_coeff * f_op_ground(j, 2);
+            constraint_ub(row + 1) = friction_ub - f_op_ground(j, 0) - friction_coeff * f_op_ground(j, 2);
+            constraint_ub(row + 2) = friction_ub + f_op_ground(j, 1) - friction_coeff * f_op_ground(j, 2);
+            constraint_ub(row + 3) = friction_ub - f_op_ground(j, 1) - friction_coeff * f_op_ground(j, 2);
+            constraint_ub(row + 4) = fz_max * contact_state(i, j) - f_op_ground(j, 2);
         }
     }
 }
@@ -649,7 +651,6 @@ RFConvexMpc::RFConvexMpc(double mass, const std::vector<double>& inertia,
     qp_solution_((action_dim_ + kStateDim) * planning_horizon),
     workspace_(0),
     initial_run_(true)
-
 {
     assert(qp_weights.size() == (kStateDim + action_dim_));
     // We assume the input inertia is a 3x3 matrix.
@@ -682,17 +683,18 @@ void RFConvexMpc::ResetSolver() { initial_run_ = true; }
 std::vector<double> RFConvexMpc::ComputeContactForces(
     std::vector<double> com_position,
     std::vector<double> com_velocity,
-    std::vector<double> base_rot_mat, // (9, 1)
+    std::vector<double> base_rot_mat, // (9,)
     std::vector<double> com_angular_velocity,
-    std::vector<double> foot_force, // (12, 1)
+    std::vector<double> foot_force, // (12,)
     std::vector<double> foot_contact_states,
-    std::vector<double> foot_positions_body_frame, // (12, 1)
+    std::vector<double> foot_positions_body_frame, // (12,)
     std::vector<double> foot_friction_coeffs,
+    std::vector<double> ground_normal_vec,
     std::vector<double> desired_com_position,
     std::vector<double> desired_com_velocity,
-    std::vector<double> desired_base_rot_mat, // (9, 1)
+    std::vector<double> desired_base_rot_mat, // (9,)
     std::vector<double> desired_com_angular_velocity,
-    std::vector<double> desired_foot_force) { // (12, 1)
+    std::vector<double> desired_foot_force) { // (12,)
 
     std::vector<double> error_result;
     
@@ -764,8 +766,7 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
     MatrixXd f_d = Eigen::Map<const MatrixXd>(desired_foot_force.data(), k3Dim, num_legs_).transpose();
     
     // Get H and g matrices
-    CalculateQpMats(a_mat_, b_mat_, d_mat_,
-                    qp_weights_single_, alpha_single_, 
+    CalculateQpMats(qp_weights_single_, alpha_single_, 
                     planning_horizon_, rotation_, f_op, // (4, 3)
                     f_d, desired_states_, // (18*h, 1)
                     &H_mat_, &g_vec_);
@@ -773,12 +774,31 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
     // Get contact states
     contact_states_ = Eigen::Map<const MatrixXd>(foot_contact_states.data(), num_legs_, planning_horizon_).transpose();
 
-    CalculateConstraintBounds(contact_states_, mass_ * kGravity * kMaxScale,
-                              mass_ * kGravity * kMinScale, foot_friction_coeffs[0],
-                              planning_horizon_, com_pos, com_vel, ang_vel, f_op,
-                              a_mat_, d_mat_, &constraint_lb_, &constraint_ub_);
+    // Calculate rotation matrix of ground in world frame
+    Vector3d ground_z(ground_normal_vec[0], ground_normal_vec[1],
+        ground_normal_vec[2]);
+    ground_z.normalize();
+
+    Vector3d world_x(1.0, 0.0, 0.0);
+
+    Vector3d ground_y = ground_z.cross(world_x);
+    ground_y.normalize();
+
+    Vector3d ground_x = ground_y.cross(ground_z);
+    ground_x.normalize();
+
+    Matrix3d ground_rot_mat;
+    ground_rot_mat.col(0) = ground_x;
+    ground_rot_mat.col(1) = ground_y;
+    ground_rot_mat.col(2) = ground_z;
+
+    // calculate constraint matrix and bounds
+    CalculateConstraintBounds(contact_states_, mass_ * kGravity * kMaxScale, mass_ * kGravity * kMinScale,
+                              foot_friction_coeffs[0], ground_rot_mat, planning_horizon_, com_pos, com_vel, 
+                              ang_vel, f_op, a_mat_, d_mat_, &constraint_lb_, &constraint_ub_);
     
-    UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
+    UpdateConstraintsMatrix(foot_friction_coeffs, ground_rot_mat,
+                            planning_horizon_, num_legs_,
                             a_mat_, b_mat_, &constraint_);
 
     if (qp_solver_name_ == OSQP) {
@@ -842,10 +862,31 @@ std::vector<double> RFConvexMpc::ComputeContactForces(
 
       const int return_code = 0;
       
-      if (workspace_==0) {
-          osqp_setup(&workspace_, &data, &settings);
-          initial_run_ = false;
-      } else {
+    //   if (workspace_==0) {
+    //       osqp_setup(&workspace_, &data, &settings);
+    //       initial_run_ = false;
+    //   }
+    bool sparsity_changed = false;
+    if (workspace_ != nullptr) {
+    // If the number of non-zeros in A or P changed, we MUST reset
+        if (workspace_->data->A->nzmax != constraint_matrix.nonZeros() || 
+            workspace_->data->P->nzmax != objective_matrix_upper_triangle.nonZeros()) {
+            sparsity_changed = true;
+        }
+    }
+
+    // 2. Perform Cleanup and Re-setup if necessary
+    if (workspace_ == nullptr || sparsity_changed) {
+        if (workspace_ != nullptr) {
+            osqp_cleanup(workspace_); // Essential to prevent memory leaks
+            workspace_ = nullptr;     // Reset pointer to ensure setup runs
+        }
+        
+        // Perform standard setup
+        osqp_setup(&workspace_, &data, &settings);
+        initial_run_ = false;
+
+    } else {
 
           c_int nnzP = objective_matrix_upper_triangle.nonZeros();
 

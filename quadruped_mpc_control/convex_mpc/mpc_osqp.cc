@@ -175,7 +175,7 @@ void CalculateQpMats(const Eigen::MatrixXd& a_exp, const Eigen::MatrixXd& b_exp,
     Eigen::MatrixXd* b_qp_ptr);
 
 void UpdateConstraintsMatrix(std::vector<double>& friction_coeff,
-    int horizon, int num_legs,
+    Matrix3d& ground_rot_mat, int horizon, int num_legs,
     Eigen::MatrixXd* constraint_ptr);
 
 void CalculateConstraintBounds(const Eigen::MatrixXd& contact_state, double fz_max,
@@ -224,6 +224,7 @@ public:
         std::vector<double> foot_contact_states,
         std::vector<double> foot_positions_body_frame,
         std::vector<double> foot_friction_coeffs,
+        std::vector<double> ground_normal_vec,
         std::vector<double> desired_com_position,
         std::vector<double> desired_com_velocity,
         std::vector<double> desired_com_roll_pitch_yaw,
@@ -462,15 +463,24 @@ void CalculateQpMats(const MatrixXd& a_exp, const MatrixXd& b_exp,
 }
 
 void UpdateConstraintsMatrix(std::vector<double>& friction_coeff,
-    int horizon, int num_legs,
+    Matrix3d& ground_rot_mat, int horizon, int num_legs,
     MatrixXd* constraint_ptr) {
     const int constraint_dim = ConvexMpc::kConstraintDim;
     MatrixXd& constraint = *constraint_ptr;
+
+    // c_ground   = R_ground.T @ c_world
+    // c_ground.T = c_world.T @ R_ground
+    MatrixXd c_mat_world(constraint_dim, k3Dim);
+    c_mat_world << -1, 0, friction_coeff[0], 
+            1, 0, friction_coeff[1], 
+            0, -1, friction_coeff[2],
+            0, 1, friction_coeff[3], 
+            0, 0, 1;
+    
+    MatrixXd c_mat_ground = c_mat_world * ground_rot_mat.transpose();
+
     for (int i = 0; i < horizon * num_legs; ++i) {
-        constraint.block<constraint_dim, k3Dim>(i * constraint_dim, i * k3Dim)
-            << -1,
-            0, friction_coeff[0], 1, 0, friction_coeff[1], 0, -1, friction_coeff[2],
-            0, 1, friction_coeff[3], 0, 0, 1;
+        constraint.block<constraint_dim, k3Dim>(i * constraint_dim, i * k3Dim) = c_mat_ground;
     }
 }
 
@@ -611,6 +621,7 @@ std::vector<double> ConvexMpc::ComputeContactForces(
     std::vector<double> foot_contact_states,
     std::vector<double> foot_positions_body_frame,
     std::vector<double> foot_friction_coeffs,
+    std::vector<double> ground_normal_vec,
     std::vector<double> desired_com_position,
     std::vector<double> desired_com_velocity,
     std::vector<double> desired_com_roll_pitch_yaw,
@@ -683,6 +694,24 @@ std::vector<double> ConvexMpc::ComputeContactForces(
         desired_states_[i * kStateDim + 12] = -kGravity;
     }
 
+    // Calculate rotation matrix of ground in world frame
+    Vector3d ground_z(ground_normal_vec[0], ground_normal_vec[1],
+        ground_normal_vec[2]);
+    ground_z.normalize();
+    
+    Vector3d world_x(1.0, 0.0, 0.0);
+
+    Vector3d ground_y = ground_z.cross(world_x);
+    ground_y.normalize();
+
+    Vector3d ground_x = ground_y.cross(ground_z);
+    ground_x.normalize();
+
+    Matrix3d ground_rot_mat;
+    ground_rot_mat.col(0) = ground_x;
+    ground_rot_mat.col(1) = ground_y;
+    ground_rot_mat.col(2) = ground_z;
+
     const Vector3d rpy(com_roll_pitch_yaw[0], com_roll_pitch_yaw[1],
         com_roll_pitch_yaw[2]);
 
@@ -720,7 +749,7 @@ std::vector<double> ConvexMpc::ComputeContactForces(
         foot_friction_coeffs[0], planning_horizon_,
         &constraint_lb_, &constraint_ub_);
     
-    UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_, num_legs_,
+    UpdateConstraintsMatrix(foot_friction_coeffs, ground_rot_mat, planning_horizon_, num_legs_,
           &constraint_);
 
     foot_friction_coeff_ << foot_friction_coeffs[0], foot_friction_coeffs[1],
@@ -787,10 +816,31 @@ std::vector<double> ConvexMpc::ComputeContactForces(
 
       const int return_code = 0;
       
-      if (workspace_==nullptr) {
-          osqp_setup(&workspace_, &data, &settings);
-          initial_run_ = false;
-      } else {
+      //   if (workspace_==0) {
+    //       osqp_setup(&workspace_, &data, &settings);
+    //       initial_run_ = false;
+    //   }
+    bool sparsity_changed = false;
+    if (workspace_ != nullptr) {
+    // If the number of non-zeros in A or P changed, we MUST reset
+        if (workspace_->data->A->nzmax != constraint_matrix.nonZeros() || 
+            workspace_->data->P->nzmax != objective_matrix_upper_triangle.nonZeros()) {
+            sparsity_changed = true;
+        }
+    }
+
+    // 2. Perform Cleanup and Re-setup if necessary
+    if (workspace_ == nullptr || sparsity_changed) {
+        if (workspace_ != nullptr) {
+            osqp_cleanup(workspace_); // Essential to prevent memory leaks
+            workspace_ = nullptr;     // Reset pointer to ensure setup runs
+        }
+        
+        // Perform standard setup
+        osqp_setup(&workspace_, &data, &settings);
+        initial_run_ = false;
+
+    }else {
 
         //   UpdateConstraintsMatrix(foot_friction_coeffs, planning_horizon_,
         //       num_legs_, &constraint_);

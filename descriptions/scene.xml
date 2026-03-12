@@ -19,6 +19,12 @@
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <!-- <geom name="floor" zaxis="-0.1 0.1 1." size="0 0 0.05" type="plane" material="groundplane"/> -->
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <body name="slope1" pos="1.0 0. 0.">
+        <geom name="slope1" type="box" size="2. 2. 0.01" zaxis="-0.2 0.2 1." rgba="0.8 0.2 0.2 1"/>
+    </body>
+
   </worldbody>
 </mujoco>

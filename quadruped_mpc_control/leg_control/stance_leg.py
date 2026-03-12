@@ -50,25 +50,51 @@ class StanceLegControlMPC():
         )
     
     def updateCommand(self, command):
-        """Update desired velocity and yaw rate
+        """Update desired velocity (body frame) and yaw rate (body frame)
         """
         self.desired_speed = np.array([command[0], command[1]])
         self.desired_yaw_rate = command[2]
     
-    def get_action(self):
+    def get_action(self, ground_normal_vec = np.array([0., 0., 1.], dtype=DTYPE)):
         """Computes the torque for stance legs
         """
-        # Update data
-        self._stateEstimator.update()
-        # com_pos doesn't matter
-        desired_com_position = np.array([0., 0., self._desired_body_height],dtype=DTYPE)
-        # want base at constant height
+        
+        ground_z = ground_normal_vec / np.linalg.norm(ground_normal_vec)
+        ground_y = np.cross(ground_z, [1., 0., 0.])
+        ground_x = np.cross(ground_y, ground_z)
+        ground_rot_mat = np.column_stack((ground_x, ground_y, ground_z))
+        base_rot_mat_ground = ground_rot_mat.T @ self._robot.getBaseRotMat()
+
+        # desired com_pos is in world frame, not ground
+        com_pos = self._stateEstimator.com_pos
+
+        # Determine body height
+        leg_state = self._gait.getLegStates()
+        leg_contact = np.where(leg_state == 1)
+        leg_id = leg_contact[0][0] if leg_contact else None
+        if leg_id is not None:
+            feet_body_frame = self._robot.getLocalFeetPosition()
+            foot_pos_ground = base_rot_mat_ground @ feet_body_frame[leg_id, :]
+            base_height_ground = -foot_pos_ground[2]
+        else:
+            base_height_ground = self._robot._bodyHeight
+
+        com_pos_ground = ground_rot_mat.T @ com_pos
+        com_pos_ground[2] -= base_height_ground
+        com_pos_projected = ground_rot_mat @ com_pos_ground
+        # com_pos_projected = com_pos - (com_pos @ ground_z) * ground_z # project com_pos into ground plane -> only works if ground plane passes through origin
+        desired_com_position = com_pos_projected + ground_rot_mat @ np.array([0., 0., self._robot._bodyHeight], dtype=DTYPE)
+        
+        # desired com_vel is in world frame, not ground
         desired_com_velocity_body = np.array([self.desired_speed[0], self.desired_speed[1], 0.], dtype=DTYPE)
         desired_com_velocity = self._robot.getBaseRotMat() @ desired_com_velocity_body
+
         # want base to be parallel to ground. Also yaw in body-aligned frame is zero
         desired_com_roll_pitch_yaw = np.array([0., 0., 0.], dtype=DTYPE)
+
         # only want to change twisting speed
-        desired_com_angular_velocity = np.array([0., 0., self.desired_yaw_rate], dtype=DTYPE)
+        desired_com_angular_velocity_body = np.array([0., 0., self.desired_yaw_rate], dtype=DTYPE)
+        desired_com_angular_velocity = self._robot.getBaseRotMat() @ desired_com_angular_velocity_body
 
         # Run MPC
         predicted_contact_forces = self._mpc.compute_contact_forces(
@@ -79,6 +105,7 @@ class StanceLegControlMPC():
             np.asarray(self._gait.getMPCtable(), dtype=DTYPE),              # foot_contact_states
             np.asarray(self._robot.getLocalFeetPosition().flatten(), dtype=DTYPE),  #foot_positions_base_frame
             self._friction_coeffs,                                          # foot_friction_coeffs
+            np.asarray(ground_normal_vec),                                  # ground normal vector
             desired_com_position,                                           # desired_com_position
             desired_com_velocity,                                           # desired_com_velocity
             desired_com_roll_pitch_yaw,                                     # desired_com_roll_pitch_yaw
@@ -105,6 +132,7 @@ class StanceLegControlMPC():
         # to the MPC solver
         return action, contact_forces
 
+
 class StanceLegControlRFMPC(StanceLegControlMPC):
     def __init__(self, robot, horizonLength = 10, dtMpc = 0.03, gait=trotting,
                  state_estimator = None, qp_solver="OSQP", mpc_weights = None):
@@ -123,21 +151,46 @@ class StanceLegControlRFMPC(StanceLegControlMPC):
             rf_qp_solver_map[qp_solver]       # solver
         )
 
-    def get_action(self):
-        # Update data
-        self._stateEstimator.update()
-        # com_pos doesn't matter
-        desired_com_position = np.array([0., 0., self._desired_body_height],dtype=DTYPE)
-        # want base at constant height
+    def get_action(self, ground_normal_vec = np.array([0., 0., 1.], dtype=DTYPE)):
+
+        ground_z = ground_normal_vec / np.linalg.norm(ground_normal_vec)
+        ground_y = np.cross(ground_z, [1., 0., 0.])
+        ground_x = np.cross(ground_y, ground_z)
+        ground_rot_mat = np.column_stack((ground_x, ground_y, ground_z))
+        base_rot_mat_ground = ground_rot_mat.T @ self._robot.getBaseRotMat()
+
+        # desired com_pos is in world frame, not ground
+        com_pos = self._stateEstimator.com_pos
+
+        # Determine body height
+        leg_state = self._gait.getLegStates()
+        leg_contact = np.where(leg_state == 1)
+        leg_id = leg_contact[0][0] if leg_contact else None
+        if leg_id is not None:
+            feet_body_frame = self._robot.getLocalFeetPosition()
+            foot_pos_ground = base_rot_mat_ground @ feet_body_frame[leg_id, :]
+            base_height_ground = -foot_pos_ground[2]
+        else:
+            base_height_ground = self._robot._bodyHeight
+
+        com_pos_ground = ground_rot_mat.T @ com_pos
+        com_pos_ground[2] -= base_height_ground
+        com_pos_projected = ground_rot_mat @ com_pos_ground
+        # com_pos_projected = com_pos - (com_pos @ ground_z) * ground_z # project com_pos into ground plane -> only works if ground plane passes through origin
+        desired_com_position = com_pos_projected + ground_rot_mat @ np.array([0., 0., self._robot._bodyHeight], dtype=DTYPE)
+        
+        # desired com_vel is in world frame, not ground
         desired_com_velocity_body = np.array([self.desired_speed[0], self.desired_speed[1], 0.], dtype=DTYPE)
         desired_com_velocity = self._robot.getBaseRotMat() @ desired_com_velocity_body
-        # want base to be parallel to ground
-        des_yaw = self._stateEstimator.com_rpy[2] + self.desired_yaw_rate * 0.03
-        # des_yaw = 0.0
-        des_hat = np.zeros((3,3))
-        des_hat[0, 1] = -des_yaw
-        des_hat[1, 0] = des_yaw
-        desired_com_R = expm(des_hat)
+
+        # want base to be parallel to gravity
+        # des_yaw = np.pi
+        # des_hat = np.zeros((3,3))
+        # des_hat[0, 1] = -des_yaw
+        # des_hat[1, 0] = des_yaw
+        # des_yaw_R = expm(des_hat)
+        desired_com_R = ground_rot_mat # @ des_yaw_R
+        #desired_com_R = np.eye(3, dtype=DTYPE)
         # only want to change twisting speed
         desired_com_angular_velocity = np.array([0., 0., self.desired_yaw_rate], dtype=DTYPE)
 
@@ -150,13 +203,13 @@ class StanceLegControlRFMPC(StanceLegControlMPC):
             if state == 1:
                 f_d[leg, 2] = self._robot._bodyMass*9.81 / np.sum(leg_state)
         
-        """ Have to do this for now"""
-        f_op = f_d
+        # Operating force
+        f_op = self._robot.getFeetForce()
                 
         # print(self.f_op)
         # Run MPC
         predicted_contact_forces = self._mpc.compute_contact_forces(
-            np.asarray(self._stateEstimator.com_pos, dtype=DTYPE),          # com_position
+            np.asarray(com_pos, dtype=DTYPE),                               # com_position
             np.asarray(self._stateEstimator.com_linvel_world, dtype=DTYPE), # com_velocity
             np.asarray(self._robot.getBaseRotMat().flatten(), dtype=DTYPE), # com_R
             np.asarray(self._stateEstimator.com_angvel_body, dtype=DTYPE),  # com_angular_velocity
@@ -164,12 +217,18 @@ class StanceLegControlRFMPC(StanceLegControlMPC):
             np.asarray(self._gait.getMPCtable(), dtype=DTYPE),              # foot_contact_states
             np.asarray(self._robot.getLocalFeetPosition().flatten(), dtype=DTYPE),  # foot_positions_base_frame
             self._friction_coeffs,                                          # foot_friction_coeffs
+            np.asarray(ground_normal_vec),                                  # ground normal vector
             desired_com_position,                                           # desired_com_position
             desired_com_velocity,                                           # desired_com_velocity
             desired_com_R.flatten(),                                        # desired_com_R - row-major
             desired_com_angular_velocity,                                   # desired_com_angular_velocity
             np.asarray(f_d, dtype=DTYPE).flatten()                          # desired foot force
         )
+
+        # If not solved, just do action previously
+        if len(predicted_contact_forces) == 0:
+            print("MPC error")
+            predicted_contact_forces = np.zeros(12, dtype=DTYPE)
         
         """ Convert contact force to joint torques """
         # Get contact force at each leg

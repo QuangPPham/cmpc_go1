@@ -12,6 +12,7 @@ class Go1:
         self._abadLinkLength = 0.08
         self._abadLocation = np.array([0.1881, 0.04675, 0], dtype=np.float32) # hip location
         self._feetName = ["FR", "FL", "RR", "RL"]
+        self._feet_idx = [4, 7, 10, 13] # Feet indices for accessing contact data
         self._num_motor_per_leg = 3
         self._num_motors = 12
         self._bodyMass = 12.75 # trunk: 5.204 kg, other parts: 7.539 kg
@@ -22,18 +23,6 @@ class Go1:
                                     ]) * 5 # for scaling due to other body parts
         self._bodyHeight = 0.26
         self._friction_coeffs = np.ones(4, dtype=np.float32) * 0.4
-        # (roll_pitch_yaw, position, angular_velocity, velocity, gravity_place_holder)
-        self._mpc_weights = np.array([
-                                5.0, 5.0, 0.0,
-                                0.0, 0.0, 10.,
-                                0.0, 0.0, 1.0,
-                                1.0, 1.0, 0.0,
-                                0.0], dtype=np.float32)
-        # self._mpc_weights = np.array([1.0, 1.5, 0.0,
-        #                          0.0, 0.0, 5.,
-        #                          0.0, 0.0, 0.1,
-        #                          1.0, 1.0, 0.1,
-        #                          0.0], dtype=np.float32) * 10
 
     def reset(self):
         """Reset simulation at keyframe position
@@ -140,43 +129,21 @@ class Go1:
 
         return local_vel
     
-    def getFeetForce(self, leg):
+    def getFeetContact(self):
+        """Get feet contact state
+        """
+        contact = []
+        for footName in self._feetName:
+            contact += [self.data.sensor(footName+"_floor_found").data[0] > 0.]
+
+        return np.asarray(contact).flatten()
+
+    def getFeetForce(self):
         """Compute feet force in world frame
         """
-        total_force = np.zeros(3)
-
-        # gen_torque = np.hstack(([0]*6, self.data.ctrl), dtype=np.float32)
-        # J = self.computeLegJacobian(leg) # 3x18
-        # J_inv = np.linalg.pinv(J)        # 18x3
-        # total_force += J_inv.T @ gen_torque
-
-        foot_geom_name = self._feetName[leg]
-        foot_geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, foot_geom_name)
-        contact = self.data.contact
-
-        # Iterate over all active contacts
-        for i in range(self.data.ncon):
-            # Check if the foot geom is involved in this contact
-            if foot_geom_id == contact.geom1[i] or foot_geom_id == contact.geom2[i]:
-                # 1. Get force in contact frame (3D)
-                force_local = np.zeros(6)
-                mujoco.mj_contactForce(self.model, self.data, i, force_local)
-
-                # 2. Extract contact frame rotation matrix
-                contact_frame = contact.frame[i].reshape(3, 3)
-                
-                # 3. Rotate local force to global frame
-                # force_global = R * force_local
-                force_global = contact_frame.T @ force_local[:3]
-                
-                # If the foot is geom2, the force direction is flipped
-                if contact.geom2[i] == foot_geom_id:
-                    total_force += force_global
-                else:
-                    total_force -= force_global # Reverse sign if foot is geom1
+        contact_forces = self.data.cfrc_ext[self._feet_idx][:, :3] # fx, fy, fz, (mx, my, mz)
                     
-        return total_force
-
+        return contact_forces # (4, 3)
 
     def computeLegJacobian(self, leg):
         """Get Jacobian of foot for the given leg in world frame
