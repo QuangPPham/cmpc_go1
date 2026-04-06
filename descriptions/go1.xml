@@ -316,21 +316,20 @@
       <framepos objtype="site" objname="RR" name="RR_pos" reftype="site" refname="imu"/>
       <framepos objtype="site" objname="RL" name="RL_pos" reftype="site" refname="imu"/>
       <framepos objtype="site" objname="head" name="head_pos"/>
-      <contact name="FR_floor_found" geom1="FR" geom2="slope1" reduce="mindist" num="1" data="found"/>
-      <contact name="FL_floor_found" geom1="FL" geom2="slope1" reduce="mindist" num="1" data="found"/>
-      <contact name="RR_floor_found" geom1="RR" geom2="slope1" reduce="mindist" num="1" data="found"/>
-      <contact name="RL_floor_found" geom1="RL" geom2="slope1" reduce="mindist" num="1" data="found"/>
-      <!-- <contact name="FR_floor_found" geom1="FR" geom2="floor" reduce="mindist" num="1" data="found"/>
-      <contact name="FL_floor_found" geom1="FL" geom2="floor" reduce="mindist" num="1" data="found"/>
-      <contact name="RR_floor_found" geom1="RR" geom2="floor" reduce="mindist" num="1" data="found"/>
-      <contact name="RL_floor_found" geom1="RL" geom2="floor" reduce="mindist" num="1" data="found"/> -->
+      <contact name="FR_floor_found" geom1="FR" reduce="mindist" num="1" data="found"/>
+      <contact name="FL_floor_found" geom1="FL" reduce="mindist" num="1" data="found"/>
+      <contact name="RR_floor_found" geom1="RR" reduce="mindist" num="1" data="found"/>
+      <contact name="RL_floor_found" geom1="RL" reduce="mindist" num="1" data="found"/>
+
+      <contact name="FR_slope_found" geom1="FR" geom2="slope1" reduce="mindist" num="1" data="found"/>
+      <contact name="FL_slope_found" geom1="FL" geom2="slope1" reduce="mindist" num="1" data="found"/>
+      <contact name="RR_slope_found" geom1="RR" geom2="slope1" reduce="mindist" num="1" data="found"/>
+      <contact name="RL_slope_found" geom1="RL" geom2="slope1" reduce="mindist" num="1" data="found"/>
     </sensor>
 
   <!-- Initial values -->
   <keyframe>
-    <key name="home" qpos="0 0 0.33 1 0 0 0 0.0 0.8 -1.5 0.0 0.8 -1.5 0.0 0.8 -1.5 0.0 0.8 -1.5"
+    <key name="home" qpos="0 0 0.33 1 0 0 0 0.0 0.8 -1.5 0.0 0.8 -1.5 0.0 1.0 -1.5 0.0 1.0 -1.5"
       ctrl="0 0 0 0 0 0 0 0 0 0 0 0"/>
-    <!-- <key name="home" qpos="0 0 0.34 0.9980973 -0.0435779 -0.0435779 0.0019027 0.0 0.8 -1.5 0.0 0.8 -1.5 0.0 0.8 -1.5 0.0 0.8 -1.5"
-    ctrl="0 0 0 0 0 0 0 0 0 0 0 0"/> -->
   </keyframe>
 </mujoco>

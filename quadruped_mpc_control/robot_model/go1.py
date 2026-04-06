@@ -33,6 +33,7 @@ class Go1:
         """Step simulation
         """
         mujoco.mj_step(self.model, self.data)
+        mujoco.mj_forward(self.model, self.data)
 
     def apply_action(self, action):
         """Apply motor torques
@@ -54,37 +55,45 @@ class Go1:
     def getTrueBasePosition(self):
         """Get position of base in global frame
         """
-        pos = self.data.qpos[:3]
+        # pos = self.data.qpos[:3]
+        pos = self.data.sensor("position").data
         return pos
 
     def getTrueBaseOrientation(self):
         """Get orientation of base as a quaternion
         """
-        quat = self.data.qpos[3:7]
+        # quat = self.data.qpos[3:7]
+        quat = self.data.sensor("orientation").data
         return quat
     
     def getBaseRotMat(self):
         """Get orientation of base as a rotation matrix
         """
-        base_quat = self.getTrueBaseOrientation()
+        # base_quat = self.getTrueBaseOrientation()
 
-        base_rot_mat = np.zeros(9)
-        mujoco.mju_quat2Mat(base_rot_mat, base_quat)
-        base_rot_mat = base_rot_mat.reshape((3, 3))
+        # # mju_quat2Mat is row-major
+        # base_rot_mat = np.zeros(9)
+        # mujoco.mju_quat2Mat(base_rot_mat, base_quat)
+        # # reshape is also row-major (default)
+        # base_rot_mat = base_rot_mat.reshape((3, 3))
+
+        base_rot_mat = self.data.site_xmat[self.model.site("imu").id].reshape((3, 3))
 
         return base_rot_mat
 
     def getTrueBaseVelocity(self):
         """Get translational velocity of robot base in world frame
         """
-        linVel = self.data.qvel[:3]
+        # linVel = self.data.qvel[:3]
+        linVel = self.data.sensor("global_linvel").data
         return linVel
     
     def getTrueBaseAngularVelocity(self):
         """Get angular velocity of robot base in local frame
         https://github.com/google-deepmind/mujoco/issues/691
         """
-        angVel = self.data.qvel[3:6]
+        # angVel = self.data.qvel[3:6]
+        angVel = self.data.sensor("gyro").data
         return angVel
 
     def getLocalFeetPosition(self):
@@ -135,6 +144,13 @@ class Go1:
         contact = []
         for footName in self._feetName:
             contact += [self.data.sensor(footName+"_floor_found").data[0] > 0.]
+
+        return np.asarray(contact).flatten()
+    
+    def getSlopeContact(self):
+        contact = []
+        for footName in self._feetName:
+            contact += [self.data.sensor(footName+"_slope_found").data[0] > 0.]
 
         return np.asarray(contact).flatten()
 

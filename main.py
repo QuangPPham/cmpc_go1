@@ -36,8 +36,8 @@ trotting = Gait(mpc_horizon, 10,
                 [5, 5, 5, 5], "Trotting")
 
 mpc_weights = np.array([5.0, 5.0, 0.0,
-                        0.0, 0.0, 10.,
-                        0.0, 0.0, 5.0,
+                        0.1, 0.1, 10.,
+                        0.1, 0.1, 1.0,
                         1.0, 1.0, 0.0,
                         0.0], dtype=np.float32)
 
@@ -65,12 +65,12 @@ state_estimator.update() # need this so data is updated for leg control initiali
 
 stance_control = StanceLegControlRFMPC(horizonLength=mpc_horizon, robot=go1, dtMpc=mpc_dt, gait=trotting, state_estimator=state_estimator, qp_solver="OSQP", mpc_weights=rf_mpc_weights)
 swing_control = SwingLegControlRaibert(robot=go1, dtMPC=mpc_dt, dt=ctrl_dt, gait=trotting, state_estimator=state_estimator)
-# stance_control = StanceLegControlMPC(horizonLength=mpc_horizon, robot=go1, dtMpc=mpc_dt, gait=trotting, state_estimator=state_estimator, qp_solver="OSQP", mpc_weights=mpc_weights)
+#stance_control = StanceLegControlMPC(horizonLength=mpc_horizon, robot=go1, dtMpc=mpc_dt, gait=trotting, state_estimator=state_estimator, qp_solver="OSQP", mpc_weights=mpc_weights)
 
 viewer = mujoco_viewer.MujocoViewer(model, data, hide_menus=False)
 viewer._render_every_frame = False
 
-command = [0.5, 0., 0.]
+command = [0., 0., 0.]
 stance_control.updateCommand(command)
 swing_control.updateCommand(command)
 # n1 = np.array([-0.1, 0.1, 1.])
@@ -82,7 +82,7 @@ while True:
     # Apply ctrl at 100 Hz
     if (sim_iter % sim_iter_per_ctrl) == 0:
 
-        if go1.getFeetContact().sum() > 1:
+        if go1.getSlopeContact().sum() > 1:
             n = n2
         else:
             n = n1
@@ -97,7 +97,7 @@ while True:
         
         # Get swing leg actions - after stance leg to update gait
         # Using default swing leg control works better for some reason
-        action = swing_control.get_action(n0)
+        action = swing_control.get_action(n)
 
         action += mpc_action
         ctrl_iter += 1

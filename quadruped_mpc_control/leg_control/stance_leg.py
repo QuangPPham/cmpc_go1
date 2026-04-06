@@ -24,6 +24,30 @@ rf_qp_solver_map = {
     "OSQP": rf_mpc.OSQP,
 }
 
+from scipy.spatial.transform import Rotation as R
+def rotation_matrix_to_roll_pitch_yaw(R_matrix):
+    """
+    Convert a 3x3 rotation matrix to roll, pitch, and yaw angles.
+
+    Args:
+        R_matrix (np.ndarray): A 3x3 numpy array representing a rotation matrix.
+
+    Returns:
+        tuple: (roll, pitch, yaw) angles in radians.
+    """
+    # Create a Rotation object from the matrix
+    rotation = R.from_matrix(R_matrix)
+    
+    # Convert to Euler angles using the 'ZYX' convention
+    euler_angles = rotation.as_euler('ZYX', degrees=False)
+    
+    # Extract individual angles from the array (in radians)
+    yaw = euler_angles[0]
+    pitch = euler_angles[1]
+    roll = euler_angles[2]
+    
+    return roll, pitch, yaw
+
 class StanceLegControlMPC():
     def __init__(self, robot: Go1, horizonLength: int = 10, dtMpc: float = 0.03, gait = trotting,
                  state_estimator: StateEstimator = None, qp_solver = "QPOASES", mpc_weights = None):
@@ -90,7 +114,8 @@ class StanceLegControlMPC():
         desired_com_velocity = self._robot.getBaseRotMat() @ desired_com_velocity_body
 
         # want base to be parallel to ground. Also yaw in body-aligned frame is zero
-        desired_com_roll_pitch_yaw = np.array([0., 0., 0.], dtype=DTYPE)
+        roll, pitch, yaw = rotation_matrix_to_roll_pitch_yaw(ground_rot_mat)
+        desired_com_roll_pitch_yaw = np.array([roll, pitch, yaw], dtype=DTYPE)
 
         # only want to change twisting speed
         desired_com_angular_velocity_body = np.array([0., 0., self.desired_yaw_rate], dtype=DTYPE)
@@ -163,9 +188,9 @@ class StanceLegControlRFMPC(StanceLegControlMPC):
         com_pos = self._stateEstimator.com_pos
 
         # Determine body height
-        leg_state = self._gait.getLegStates()
-        leg_contact = np.where(leg_state == 1)
-        leg_id = leg_contact[0][0] if leg_contact else None
+        leg_state = self._robot.getFeetContact()
+        leg_contact = np.where(leg_state == 1)[0]
+        leg_id = leg_contact[0] if np.any(leg_contact) else None
         if leg_id is not None:
             feet_body_frame = self._robot.getLocalFeetPosition()
             foot_pos_ground = base_rot_mat_ground @ feet_body_frame[leg_id, :]
